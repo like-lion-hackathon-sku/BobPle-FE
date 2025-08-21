@@ -15,14 +15,19 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
   // ----- 바디/헤더 준비 -----
   let body = init.body as any;
-  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
-  const isURLParams = typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams;
-  const isBlob = typeof Blob !== 'undefined' && body instanceof Blob;
+  const isFormData   = typeof FormData !== 'undefined' && body instanceof FormData;
+  const isURLParams  = typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams;
+  const isBlob       = typeof Blob !== 'undefined' && body instanceof Blob;
   const isBufferView = typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView?.(body);
-  const hasBody = body !== undefined && body !== null;
+  const hasBody      = body !== undefined && body !== null;
 
   // 기존 headers를 보존하면서 조작하기 쉽게 Headers로 래핑
   const headers = new Headers(init.headers as HeadersInit | undefined);
+
+  // accept 기본값 보정 (서버가 JSON 주는 경우가 대부분)
+  if (!headers.has('accept')) {
+    headers.set('accept', 'application/json'); // ★ 변경
+  }
 
   // content-type이 미지정 && JSON으로 보낼 상황이면 지정
   const hasExplicitContentType = headers.has('content-type');
@@ -36,6 +41,16 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
   if (shouldSendJson && !hasExplicitContentType) {
     headers.set('content-type', 'application/json');
+  }
+
+  // ★ 변경: body가 "문자열이지만 JSON"인 경우에도 content-type 자동 보정
+  if (!shouldSendJson && hasBody && !hasExplicitContentType && typeof body === 'string') {
+    try {
+      JSON.parse(body); // 문자열이 JSON이면
+      headers.set('content-type', 'application/json');
+    } catch {
+      // JSON이 아니면 건드리지 않음(text/plain 등)
+    }
   }
 
   // 객체 바디 자동 JSON 직렬화
@@ -73,7 +88,11 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
       statusText: res.statusText,
       body: text,
     });
-    throw new Error(data?.message || `HTTP ${res.status}`);
+    // ★ 변경: 에러에 status 부착해서 호출부에서 숫자로 분기 가능
+    const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { status?: number; body?: string };
+    err.status = res.status;
+    err.body = text;
+    throw err;
   }
 
   return (data as T) ?? ({} as T);
