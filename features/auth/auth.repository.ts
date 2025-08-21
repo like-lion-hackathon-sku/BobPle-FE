@@ -8,7 +8,6 @@ import { apiFetch } from '@/shared/api/client';
 export function postLogin(payload: { idToken: string }) {
   return apiFetch<{ ok: boolean }>('/api/auth/login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, // ★ 추가
     body: JSON.stringify(payload),
   });
 }
