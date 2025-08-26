@@ -50,6 +50,7 @@ const mockEventDetail = {
     {
       id: 1,
       user: {
+        id: 101, // ← 임시로 추가한 ID
         name: "박준호",
         avatar: "/placeholder.svg?height=32&width=32",
       },
@@ -59,7 +60,7 @@ const mockEventDetail = {
   ],
   isUserApplied: false, // 현재 사용자가 이미 신청했는지 여부
   isUserHost: false, // 현재 사용자가 호스트인지 여부
-}
+};
 
 /**
  * 밥약 상세 페이지 컴포넌트
@@ -126,30 +127,35 @@ export default function EventDetailPage() {
    * 새 댓글 추가 처리 함수
    */
   const handleAddComment = async () => {
-    if (!newComment.trim()) return
+  if (!newComment.trim()) return;
 
-    try {
-      // Mock API 호출 - 실제로는 POST /api/events/{eventId}/comments 엔드포인트 호출
-      const comment = {
-        id: Date.now(),
-        user: {
-          name: "현재 사용자",
-          avatar: "/placeholder.svg?height=32&width=32",
-        },
-        content: newComment,
-        createdAt: new Date().toISOString(),
-      }
+  try {
+    // ✅ 로컬에서 현재 사용자 읽기 (getCurrentUser 없이)
+    const me =
+      typeof window !== "undefined"
+        ? JSON.parse(localStorage.getItem("user") || "null")
+        : null;
 
-      // 댓글 목록에 새 댓글 추가
-      setEvent((prev) => ({
-        ...prev,
-        comments: [...prev.comments, comment],
-      }))
-      setNewComment("")
-    } catch (error) {
-      console.error("Failed to add comment:", error)
-    }
+    const comment = {
+      id: Date.now(),
+      user: {
+        id: me?.id ?? 0, // 가능하면 실제 id, 없으면 0 같은 placeholder
+        name: me?.name ?? "현재 사용자",
+        avatar: me?.avatar ?? "/placeholder.svg?height=32&width=32",
+      },
+      content: newComment,
+      createdAt: new Date().toISOString(),
+    };
+
+    setEvent((prev) => ({
+      ...prev,
+      comments: [...prev.comments, comment],
+    }));
+    setNewComment("");
+  } catch (error) {
+    console.error("Failed to add comment:", error);
   }
+};
 
   /**
    * 댓글 삭제 처리 함수

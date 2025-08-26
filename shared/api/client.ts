@@ -20,10 +20,17 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   const isBlob       = typeof Blob !== 'undefined' && body instanceof Blob;
   const isBufferView = typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView?.(body);
   const hasBody      = body !== undefined && body !== null;
-
+  
   // 기존 headers를 보존하면서 조작하기 쉽게 Headers로 래핑
   const headers = new Headers(init.headers as HeadersInit | undefined);
-
+try {
+    if (typeof window !== "undefined") {
+      const token = localStorage.getItem("authToken");
+      if (token && !headers.has("authorization")) {
+        headers.set("authorization", `Bearer ${token}`);
+      }
+    }
+  } catch {}
   // accept 기본값 보정 (서버가 JSON 주는 경우가 대부분)
   if (!headers.has('accept')) {
     headers.set('accept', 'application/json'); // ★ 변경
@@ -82,13 +89,25 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   }
 
   if (!res.ok) {
+    // ✅ 1) 프로필 조회 404는 정상 흐름으로 간주: 에러 던지지 않고 null 반환
+    const isProfile404 =
+      res.status === 404 &&
+      (path.endsWith('/api/auth/profile') || path.includes('/api/auth/profile'));
+
+    // ✅ 2) 선택: 호출부에서 okStatuses로 허용 상태를 넘기면 에러로 던지지 않음
+    const okStatuses: number[] | undefined = (init as any)?.okStatuses;
+    const isWhitelisted = Array.isArray(okStatuses) && okStatuses.includes(res.status);
+
+    if (isProfile404 || isWhitelisted) {
+      return (data as T) ?? (null as T);
+    }
+
     console.warn('[apiFetch] error', {
       url,
       status: res.status,
       statusText: res.statusText,
       body: text,
     });
-    // ★ 변경: 에러에 status 부착해서 호출부에서 숫자로 분기 가능
     const err = new Error(data?.message || `HTTP ${res.status}`) as Error & { status?: number; body?: string };
     err.status = res.status;
     err.body = text;

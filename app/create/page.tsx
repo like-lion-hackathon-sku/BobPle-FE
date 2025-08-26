@@ -1,88 +1,100 @@
-"use client"
+// app/create/page.tsx
+"use client";
 
-import type React from "react"
+import type React from "react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ArrowLeft, Search } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { eventAPI } from "@/lib/api";
 
-import { useState } from "react"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { ArrowLeft, Search } from "lucide-react"
-import { useRouter, useSearchParams } from "next/navigation"
-import { eventAPI } from "@/lib/api"
-
-// 성별 제한 옵션 정의
+// 성별 제한 옵션 (UI 전용)
 const genderOptions = [
   { value: "all", label: "상관없음" },
   { value: "female", label: "여자만" },
   { value: "male", label: "남자만" },
-]
+];
 
-/**
- * 밥약 생성 페이지 컴포넌트
- * 사용자가 새로운 밥약을 만들 수 있는 폼을 제공
- */
 export default function CreateEventPage() {
-  const router = useRouter()
-  const searchParams = useSearchParams()
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
-  // 밥약 생성 폼 데이터 상태
+  // 폼 상태 (UI 전용 필드 포함)
   const [formData, setFormData] = useState({
     title: "",
-    description: "",
-    restaurant: searchParams.get("restaurant") || "",
-    location: searchParams.get("location") || "",
-    maxParticipants: 2,
-    genderRestriction: "all",
-  })
+    content: "", // ✅ 서버에는 content로 보냄
+    restaurant: searchParams.get("restaurant") || "", // UI 표시용(서버 미전송)
+    location: searchParams.get("location") || "", // UI 표시용(서버 미전송)
+    maxParticipants: 2, // UI 전용
+    genderRestriction: "all", // UI 전용
+  });
 
-  const [startDate, setStartDate] = useState("")
-  const [startTime, setStartTime] = useState("")
-  const [endDate, setEndDate] = useState("")
-  const [endTime, setEndTime] = useState("")
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState("")
+  const [startDate, setStartDate] = useState("");
+  const [startTime, setStartTime] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [endTime, setEndTime] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState("");
 
-  /**
-   * 밥약 생성 폼 제출 처리 함수
-   * 실제 API 호출을 통해 새 밥약을 생성하고 홈페이지로 이동
-   */
+  // 한국시간(+09:00) ISO로 변환
+  function toISO(date: string, time: string) {
+    return new Date(`${date}T${time}:00+09:00`).toISOString();
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!startDate || !startTime || !endDate || !endTime) return
+    e.preventDefault();
+    if (!startDate || !startTime || !endDate || !endTime) {
+      setError("시작/종료 일시를 모두 선택해주세요.");
+      return;
+    }
 
-    setIsSubmitting(true)
-    setError("")
+    // ✅ 반드시 숫자 restaurantId가 필요(스키마상 NOT NULL)
+    const restaurantId = Number(searchParams.get("restaurantId") || 0);
+    if (!restaurantId) {
+      setError("식당을 먼저 선택해주세요. (돋보기 아이콘으로 식당을 선택)");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError("");
 
     try {
-      const eventData = {
-        ...formData,
-        startDateTime: `${startDate} ${startTime}`,
-        endDateTime: `${endDate} ${endTime}`,
+      // ✅ 백엔드 스키마에 맞는 페이로드 (camelCase)
+      const payload = {
+        title: formData.title,
+        content: formData.content,
+        restaurantId,                       // Int (DB의 restaurant_id와 매핑)
+        startAt: toISO(startDate, startTime),
+        endAt:   toISO(endDate, endTime),
+      };
+
+      const response = await eventAPI.createEvent(payload);
+
+      // 응답 형태가 다양할 수 있으니, 에러만 아니면 성공 처리
+      if (!response || response.error) {
+        throw new Error(response?.message || "생성 실패");
       }
 
-      const response = await eventAPI.createEvent(eventData)
-
-      if (response.success) {
-        // 밥약 생성 완료 후 홈페이지로 이동
-        router.push("/")
-      }
-    } catch (error) {
-      console.error("밥약 생성 실패:", error)
-      setError(error instanceof Error ? error.message : "밥약 생성에 실패했습니다.")
+      router.push("/");
+    } catch (err: any) {
+      console.error("밥약 생성 실패:", err);
+      setError(err?.message || "밥약 생성에 실패했습니다.");
     } finally {
-      setIsSubmitting(false)
+      setIsSubmitting(false);
     }
-  }
+  };
 
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-50 bg-card border-b border-border">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center space-x-4">
-            <Button variant="ghost" size="sm" onClick={() => router.back()}>
+            <Button variant="ghost" size="sm" onClick={() => router.push("/")}>
               <ArrowLeft className="w-4 h-4" />
             </Button>
             <h1 className="text-xl font-semibold">밥약 만들기</h1>
@@ -98,7 +110,7 @@ export default function CreateEventPage() {
             </div>
           )}
 
-          {/* 기본 정보 입력 섹션 */}
+          {/* 기본 정보 */}
           <Card>
             <CardHeader>
               <CardTitle>기본 정보</CardTitle>
@@ -116,12 +128,12 @@ export default function CreateEventPage() {
               </div>
 
               <div>
-                <Label htmlFor="description">설명</Label>
+                <Label htmlFor="content">설명</Label>
                 <Textarea
-                  id="description"
+                  id="content"
                   placeholder="어떤 식사 모임인지 자세히 설명해주세요"
-                  value={formData.description}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, description: e.target.value }))}
+                  value={formData.content}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, content: e.target.value }))}
                   rows={3}
                 />
               </div>
@@ -140,21 +152,30 @@ export default function CreateEventPage() {
                     <Search className="w-4 h-4" />
                   </Button>
                 </div>
+                {/* 선택된 restaurantId가 없으면 안내 */}
+                {!Number(searchParams.get("restaurantId") || 0) && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    * 식당 카드를 눌러 들어간 뒤, “이 식당에서 밥약 만들기” 버튼을 누르면 식당이 연결돼요.
+                  </p>
+                )}
               </div>
 
               <div>
-                <Label htmlFor="location">만날 장소 *</Label>
+                <Label htmlFor="location">만날 장소 (선택)</Label>
                 <Input
                   id="location"
                   placeholder="예: 강남역 2번 출구"
                   value={formData.location}
                   onChange={(e) => setFormData((prev) => ({ ...prev, location: e.target.value }))}
-                  required
                 />
+                <p className="text-xs text-muted-foreground mt-1">
+                  * 참고용 표시만 합니다. 저장은 되지 않아요(백엔드 컬럼 없음).
+                </p>
               </div>
             </CardContent>
           </Card>
 
+          {/* 날짜/시간 */}
           <Card>
             <CardHeader>
               <CardTitle>날짜 및 시간</CardTitle>
@@ -208,7 +229,6 @@ export default function CreateEventPage() {
                 </div>
               </div>
 
-              {/* 선택된 시간 범위 미리보기 */}
               {startDate && startTime && endDate && endTime && (
                 <div className="p-3 bg-muted rounded-lg">
                   <p className="text-sm text-muted-foreground">선택된 일정</p>
@@ -220,14 +240,14 @@ export default function CreateEventPage() {
             </CardContent>
           </Card>
 
-          {/* 참여자 설정 섹션 */}
+          {/* 참여자 설정 (UI 전용) */}
           <Card>
             <CardHeader>
               <CardTitle>참여자 설정</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
-                <Label htmlFor="maxParticipants">최대 참여자 수 *</Label>
+                <Label htmlFor="maxParticipants">최대 참여자 수</Label>
                 <Select
                   value={formData.maxParticipants.toString()}
                   onValueChange={(value) =>
@@ -245,6 +265,7 @@ export default function CreateEventPage() {
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground mt-1">* 현재 백엔드 저장은 되지 않습니다.</p>
               </div>
 
               <div>
@@ -264,11 +285,12 @@ export default function CreateEventPage() {
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground mt-1">* 현재 백엔드 저장은 되지 않습니다.</p>
               </div>
             </CardContent>
           </Card>
 
-          {/* 폼 제출 버튼들 */}
+          {/* 버튼 */}
           <div className="flex gap-4">
             <Button type="button" variant="outline" className="flex-1 bg-transparent" onClick={() => router.back()}>
               취소
@@ -279,12 +301,11 @@ export default function CreateEventPage() {
               disabled={
                 isSubmitting ||
                 !formData.title ||
-                !formData.location ||
                 !startDate ||
                 !startTime ||
                 !endDate ||
                 !endTime
-              }
+              } // 🔁 location은 필수 아님
             >
               {isSubmitting ? "생성 중..." : "밥약 만들기"}
             </Button>
@@ -292,5 +313,5 @@ export default function CreateEventPage() {
         </form>
       </div>
     </div>
-  )
+  );
 }
