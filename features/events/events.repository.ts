@@ -1,4 +1,5 @@
 import { apiFetch } from '@/shared/api/client';
+import { getMyProfile, putMyProfile } from "@/features/auth/auth.repository";
 
 /**
  * 이벤트 리스트 조회

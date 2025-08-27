@@ -1,345 +1,238 @@
 /**
- * API 호출을 위한 유틸리티 함수들
+ * API 호출 엔드포인트 래퍼 모음 (기존 이름 그대로)
+ * - 코어 유틸은 api.core.ts에서 import
+ * - 외부 사용처는 계속 "@/lib/api" 에서 import
  */
 
-// API 기본 URL (환경변수에서 가져오거나 기본값 사용)
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || ""
+import { apiRequest, refreshPOST, getAuthToken, API_BASE_URL } from "./api.core";
+export { apiRequest, refreshPOST, getAuthToken, API_BASE_URL }; // 밖으로도 다시 내보내기
+export type { Profile } from "./api.core";
+import { eventAPI_mutation } from "./api.routes";
 
-/**
- * 로컬 스토리지에서 인증 토큰 가져오기
- */
-function getAuthToken(): string | null {
-  if (typeof window === "undefined") return null
-  return localStorage.getItem("authToken")
+// ─────────────────────────────────────────────────────────────
+// 보조 유틸(도메인 변환)
+// ─────────────────────────────────────────────────────────────
+/** UI 라벨 → 서버 포맷 */
+const toWireGender = (g: any): "Male" | "Female" | "None" | undefined => {
+  if (g === "남성" || g === "M") return "Male";
+  if (g === "여성" || g === "F") return "Female";
+  if (g === "상관없음" || g === "무관" || g === "N" || g === "선택안함") return "None";
+  return undefined;
+};
+const toWireGrade = (v: any): number | undefined => {
+  if (v == null) return undefined;
+  const n = typeof v === "number" ? v : parseInt(String(v).replace(/\D/g, ""), 10);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+/** 보조: 현재 로그인 유저 로컬 */
+export function getCurrentUser(): any | null {
+  if (typeof window === "undefined") return null;
+  const s = localStorage.getItem("user");
+  return s ? JSON.parse(s) : null;
+}
+export function isAuthenticated(): boolean {
+  if (typeof window === "undefined") return false;
+  return !!getAuthToken();
 }
 
-/**
- * API 요청을 위한 공통 fetch 함수
- */
-async function apiRequest(endpoint: string, options: RequestInit = {}): Promise<any> {
-  const token = getAuthToken()
-
-  const config: RequestInit = {
-    headers: {
-      "Content-Type": "application/json",
-      ...(token && { Authorization: `Bearer ${token}` }),
-      ...options.headers,
-    },
-    ...options,
-  }
-
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, config)
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.error || `HTTP error! status: ${response.status}`)
-  }
-
-  return response.json()
-}
-
-/**
- * 인증 관련 API 함수들
- */
+// ─────────────────────────────────────────────────────────────
+// 인증
+// ─────────────────────────────────────────────────────────────
 export const authAPI = {
-  // 로그인
   login: async (email: string, password: string) => {
     const response = await apiRequest("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
-    })
-
-    // 로그인 성공 시 토큰 저장
-    if (response.success && response.token) {
-      localStorage.setItem("authToken", response.token)
-      localStorage.setItem("user", JSON.stringify(response.user))
+    });
+    if (response?.success && (response?.token || response?.accessToken)) {
+      const t = response?.token ?? response?.accessToken;
+      localStorage.setItem("authToken", t);
     }
-
-    return response
+    if (response?.user) localStorage.setItem("user", JSON.stringify(response.user));
+    if (response?.success || response?.user) localStorage.setItem("isLoggedIn", "true");
+    return response;
   },
 
-  // 로그아웃
+  /** Google OAuth */
+  loginWithIdToken: async (idToken: string) => {
+    const response = await apiRequest("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ idToken }),
+    });
+    const token =
+      response?.token ??
+      response?.accessToken ??
+      response?.access_token ??
+      response?.jwt ??
+      response?.data?.token ??
+      response?.data?.accessToken ?? null;
+    if (token) localStorage.setItem("authToken", token);
+
+    const user = response?.user ?? response?.success ?? null;
+    if (user) localStorage.setItem("user", JSON.stringify(user));
+    localStorage.setItem("isLoggedIn", "true");
+    return response;
+  },
+
   logout: async () => {
-    const response = await apiRequest("/api/auth/logout", {
-      method: "POST",
-    })
-
-    // 로그아웃 성공 시 로컬 데이터 삭제
-    if (response.success) {
-      localStorage.removeItem("authToken")
-      localStorage.removeItem("user")
+    try {
+      await apiRequest("/api/auth/logout", { method: "POST" });
+    } finally {
+      localStorage.removeItem("authToken");
+      localStorage.removeItem("accessToken");
+      localStorage.removeItem("user");
+      localStorage.removeItem("isLoggedIn");
     }
-
-    return response
   },
 
-  // 프로필 조회
+  /** 내 프로필 조회: refresh(POST)로만 회수 */
   getProfile: async () => {
-    return apiRequest("/api/auth/profile")
+    try {
+      const refreshed = await refreshPOST();
+      const me = refreshed?.user ?? refreshed ?? null;
+
+      if (me?.id) {
+        localStorage.setItem("user", JSON.stringify(me));
+        localStorage.setItem("isLoggedIn", "true");
+      }
+      return me;
+    } catch {
+      return null;
+    }
   },
 
-  // 프로필 수정
-  updateProfile: async (profileData: any) => {
-    return apiRequest("/api/auth/profile", {
+  /** 초기 프로필 설정 */
+  updateProfile: async (profileData: { grade: any; gender: any; nickname: string }) => {
+    const grade = toWireGrade(profileData.grade);
+    const gender = toWireGender(profileData.gender);
+    const nickname = profileData.nickname?.trim();
+    if (!grade || !gender || !nickname) {
+      throw new Error("학년, 성별, 닉네임은 모두 입력해야 합니다.");
+    }
+    const payload = { grade, gender, nickname };
+    return apiRequest("/api/auth/profile/", {
       method: "PUT",
-      body: JSON.stringify(profileData),
-    })
+      body: JSON.stringify(payload),
+    });
   },
-}
+};
 
-/**
- * 사용자 관련 API 함수들
- */
+// ─────────────────────────────────────────────────────────────
+// 사용자
+// ─────────────────────────────────────────────────────────────
 export const userAPI = {
-  // 다른 사용자 프로필 조회
-  getUserProfile: async (userId: number) => {
-    return apiRequest(`/api/users/${userId}`)
-  },
-}
+  getUserProfile: async (userId: number) => apiRequest(`/api/users/${userId}`),
+};
 
-/**
- * 밥약 관련 API 함수들
- */
-export const eventAPI = {
-  // 밥약 생성
-  createEvent: async (eventData: any) => {
-    return apiRequest("/api/events/creation", {
-      method: "POST",
-      body: JSON.stringify(eventData),
-    })
-  },
+// ─────────────────────────────────────────────────────────────
+// 이벤트
+// ─────────────────────────────────────────────────────────────
+export const eventAPI_read = {
+  createEvent: async (eventData: any) =>
+    apiRequest("/api/events/creation", { method: "POST", body: JSON.stringify(eventData) }),
 
-  // 밥약 목록 조회
   getEvents: async (params?: {
-    search?: string
-    category?: string
-    region?: string
-    genderRestriction?: string
-    page?: number
-    limit?: number
+    search?: string; category?: string; region?: string; genderRestriction?: string; page?: number; limit?: number;
   }) => {
-    const searchParams = new URLSearchParams()
-    if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        if (value !== undefined && value !== "") {
-          searchParams.append(key, value.toString())
-        }
-      })
-    }
-
-    const queryString = searchParams.toString()
-    return apiRequest(`/api/events${queryString ? `?${queryString}` : ""}`)
+    const sp = new URLSearchParams();
+    if (params)
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== "") sp.append(k, String(v));
+      });
+    const q = sp.toString();
+    return apiRequest(`/api/events${q ? `?${q}` : ""}`);
   },
 
-  // 밥약 상세 조회
-  getEvent: async (eventId: number) => {
-    return apiRequest(`/api/events/${eventId}`)
-  },
+  getEvent: async (eventId: number) => apiRequest(`/api/events/${eventId}`),
 
-  // 밥약 수정
-  updateEvent: async (eventId: number, eventData: any) => {
-    return apiRequest(`/api/events/${eventId}/edit`, {
-      method: "PUT",
-      body: JSON.stringify(eventData),
-    })
-  },
+  
+};
+export function openChatSocket(
+  chatId: number,
+  opts?: {
+    token?: string;
+    onMessage?: (msg: any) => void;
+    onOpen?: () => void;
+    onClose?: (ev: CloseEvent) => void;
+    onError?: (ev: Event) => void;
+  }
+) {
+  const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
+  const wsBase = process.env.NEXT_PUBLIC_WS_URL || apiBase.replace(/^http/i, "ws");
+  const base = wsBase.replace(/\/+$/, "");
+  const token = opts?.token || (typeof window !== "undefined" ? localStorage.getItem("authToken") || "" : "");
+  const url = `${base}/ws/chats/${chatId}` + (token ? `?token=${encodeURIComponent(token)}` : "");
 
-  // 밥약 삭제
-  deleteEvent: async (eventId: number) => {
-    return apiRequest(`/api/events/${eventId}/cancel`, {
-      method: "DELETE",
-    })
-  },
-
-  // 밥약 신청
-  applyToEvent: async (eventId: number, message?: string) => {
-    return apiRequest(`/api/events/${eventId}/application`, {
-      method: "POST",
-      body: JSON.stringify({ message }),
-    })
-  },
-
-  // 밥약 신청 취소
-  cancelApplication: async (eventId: number, applicationId: number) => {
-    return apiRequest(`/api/events/${eventId}/application/${applicationId}/cancel`, {
-      method: "DELETE",
-    })
-  },
-
-  // 내가 참여한 밥약 조회
-  getMyEvents: async () => {
-    return apiRequest("/api/events/me")
-  },
+  const ws = new WebSocket(url);
+  ws.addEventListener("open", () => opts?.onOpen?.());
+  ws.addEventListener("message", (e) => {
+    let data: any = e.data;
+    try { data = JSON.parse(e.data); } catch {}
+    opts?.onMessage?.(data);
+  });
+  ws.addEventListener("close", (ev) => opts?.onClose?.(ev));
+  ws.addEventListener("error", (ev) => opts?.onError?.(ev));
+  return ws;
 }
-
-/**
- * 채팅 관련 API 함수들
- */
+// ─────────────────────────────────────────────────────────────
+// 채팅
+// ─────────────────────────────────────────────────────────────
 export const chatAPI = {
-  // 채팅방 정보 조회
-  getChatRoom: async (chatId: number) => {
-    return apiRequest(`/api/chats/${chatId}`)
-  },
+  getChatRoom: async (chatId: number) => apiRequest(`/api/chats/${chatId}`),
+  sendMessage: async (chatId: number, content: string) =>
+    apiRequest(`/api/chats/${chatId}`, { method: "POST", body: JSON.stringify({ content }) }),
+  leaveChat: async (chatId: number) => apiRequest(`/api/chats/${chatId}`, { method: "PATCH" }),
+};
+export const eventAPI = { ...eventAPI_read, ...eventAPI_mutation };
 
-  // 메시지 전송
-  sendMessage: async (chatId: number, content: string) => {
-    return apiRequest(`/api/chats/${chatId}`, {
-      method: "POST",
-      body: JSON.stringify({ content }),
-    })
-  },
-
-  // 채팅방 나가기
-  leaveChat: async (chatId: number) => {
-    return apiRequest(`/api/chats/${chatId}`, {
-      method: "PATCH",
-    })
-  },
-}
-
-/**
- * 댓글 관련 API 함수들
- */
-export const commentAPI = {
-  // 댓글 목록 조회
-  getComments: async (eventId: number, page = 1, limit = 10) => {
-    return apiRequest(`/api/events/${eventId}/comments?page=${page}&limit=${limit}`)
-  },
-
-  // 댓글 작성
-  createComment: async (eventId: number, content: string) => {
-    return apiRequest(`/api/events/${eventId}/comments`, {
-      method: "POST",
-      body: JSON.stringify({ content }),
-    })
-  },
-
-  // 댓글 삭제
-  deleteComment: async (eventId: number, commentId: number) => {
-    return apiRequest(`/api/events/${eventId}/comments/${commentId}`, {
-      method: "DELETE",
-    })
-  },
-}
-
-/**
- * 알림 관련 API 함수들
- */
+// ─────────────────────────────────────────────────────────────
+// 알림
+// ─────────────────────────────────────────────────────────────
 export const notificationAPI = {
-  // 알림 목록 조회
-  getNotifications: async (params?: {
-    unreadOnly?: boolean
-    type?: string
-    page?: number
-    limit?: number
-  }) => {
-    const searchParams = new URLSearchParams()
-    if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        if (value !== undefined && value !== "") {
-          searchParams.append(key, value.toString())
-        }
-      })
-    }
-
-    const queryString = searchParams.toString()
-    return apiRequest(`/api/notifications${queryString ? `?${queryString}` : ""}`)
+  getNotifications: async (params?: { unreadOnly?: boolean; type?: string; page?: number; limit?: number }) => {
+    const sp = new URLSearchParams();
+    if (params)
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== "") sp.append(k, String(v));
+      });
+    const q = sp.toString();
+    return apiRequest(`/api/notifications${q ? `?${q}` : ""}`);
   },
-
-  // 알림 읽음 처리
-  markAsRead: async (notificationId: string) => {
-    return apiRequest(`/api/notifications/${notificationId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ isRead: true }),
-    })
-  },
-
-  // 알림 삭제
-  deleteNotification: async (notificationId: string) => {
-    return apiRequest(`/api/notifications/${notificationId}`, {
-      method: "DELETE",
-    })
-  },
-
-  // 시스템 알림 생성 (관리자/시스템용)
+  markAsRead: async (notificationId: string) =>
+    apiRequest(`/api/notifications/${notificationId}`, { method: "PATCH", body: JSON.stringify({ isRead: true }) }),
+  deleteNotification: async (notificationId: string) =>
+    apiRequest(`/api/notifications/${notificationId}`, { method: "DELETE" }),
   createNotification: async (notificationData: {
-    eventId: string
-    participantIds: number[]
-    type: string
-    title: string
-    message: string
-    actionData?: any
-  }) => {
-    return apiRequest("/api/notification", {
-      method: "POST",
-      body: JSON.stringify(notificationData),
-    })
-  },
-}
+    eventId: string; participantIds: number[]; type: string; title: string; message: string; actionData?: any;
+  }) => apiRequest("/api/notification", { method: "POST", body: JSON.stringify(notificationData) }),
+};
 
-/**
- * 리뷰 관련 API 함수들
- */
-export const reviewAPI = {
-  // 사용자 리뷰 조회
-  getUserReviews: async (userId: number, page = 1, limit = 10) => {
-    return apiRequest(`/api/reviews/${userId}?page=${page}&limit=${limit}`)
-  },
 
-  // 리뷰 작성
-  createReview: async (
-    userId: number,
-    reviewData: {
-      rating: number
-      comment?: string
-      eventId: string
-    },
-  ) => {
-    return apiRequest(`/api/reviews/${userId}`, {
-      method: "POST",
-      body: JSON.stringify(reviewData),
-    })
-  },
-}
 
-/**
- * 식당 관련 API 함수들
- */
+// ─────────────────────────────────────────────────────────────
+// 추천 식당
+// ─────────────────────────────────────────────────────────────
 export const restaurantAPI = {
-  // 추천 식당 조회
-  getRecommendations: async (params?: {
-    category?: string
-    location?: string
-    priceRange?: string
-    limit?: number
+  search: async (params?: {
+    q?: string; location?: string; category?: string; sponsoredOnly?: 0 | 1; page?: number; limit?: number;
   }) => {
-    const searchParams = new URLSearchParams()
+    const sp = new URLSearchParams();
     if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        if (value !== undefined && value !== "") {
-          searchParams.append(key, value.toString())
-        }
-      })
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== "") sp.append(k, String(v));
+      });
     }
-
-    const queryString = searchParams.toString()
-    return apiRequest(`/api/restaurants/recommends${queryString ? `?${queryString}` : ""}`)
+    const qs = sp.toString();
+    return apiRequest(`/api/restaurants${qs ? `?${qs}` : ""}`);
   },
-}
-
-/**
- * 인증 상태 확인 함수
- */
-export function isAuthenticated(): boolean {
-  if (typeof window === "undefined") return false
-  return !!getAuthToken()
-}
-
-/**
- * 현재 로그인한 사용자 정보 가져오기
- */
-export function getCurrentUser(): any | null {
-  if (typeof window === "undefined") return null
-  const userStr = localStorage.getItem("user")
-  return userStr ? JSON.parse(userStr) : null
-}
+  getRecommendations: async (params?: { category?: string; location?: string; priceRange?: string; limit?: number }) => {
+    const sp = new URLSearchParams();
+    if (params) Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== "") sp.append(k, String(v));
+    });
+    const qs = sp.toString();
+    return apiRequest(`/api/restaurants/recommends${qs ? `?${qs}` : ""}`);
+  },
+};
+export { /*chatAPI,  notificationAPI,*/ commentAPI,reviewAPI } from "./api.routes";

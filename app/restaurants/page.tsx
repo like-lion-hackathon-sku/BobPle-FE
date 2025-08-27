@@ -1,118 +1,138 @@
-"use client"
+"use client";
 
-import { useState } from "react"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Badge } from "@/components/ui/badge"
-import { ArrowLeft, Search, MapPin, Star, Clock } from "lucide-react"
-import { useRouter } from "next/navigation"
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { ArrowLeft, Search, MapPin, Clock, Star } from "lucide-react";
+import { restaurantsRepository, type Restaurant } from "@/features/restaurants/restaurants.repository";
 
-// Mock restaurant data
-const mockRestaurants = [
-  {
-    id: 1,
-    name: "라 트라토리아",
-    category: "양식",
-    rating: 4.8,
-    reviewCount: 127,
-    priceRange: "₩₩₩",
-    location: "강남구 역삼동",
-    distance: "0.3km",
-    image: "/italian-restaurant-interior.png",
-    tags: ["파스타", "피자", "와인", "데이트"],
-    openHours: "11:00 - 22:00",
-    phone: "02-1234-5678",
-    description: "정통 이탈리안 요리를 선보이는 아늑한 레스토랑",
-    isRecommended: true,
-  },
-  {
-    id: 2,
-    name: "브런치 카페 델리",
-    category: "양식",
-    rating: 4.6,
-    reviewCount: 89,
-    priceRange: "₩₩",
-    location: "마포구 홍대입구",
-    distance: "1.2km",
-    image: "/brunch-cafe-interior.png",
-    tags: ["브런치", "커피", "디저트", "인스타"],
-    openHours: "09:00 - 21:00",
-    phone: "02-2345-6789",
-    description: "맛있는 브런치와 커피를 즐길 수 있는 감성 카페",
-    isRecommended: true,
-  },
-  {
-    id: 3,
-    name: "전통 한정식",
-    category: "한식",
-    rating: 4.9,
-    reviewCount: 203,
-    priceRange: "₩₩₩₩",
-    location: "중구 을지로3가",
-    distance: "2.1km",
-    image: "/korean-traditional-restaurant.png",
-    tags: ["한정식", "전통", "접대", "고급"],
-    openHours: "12:00 - 21:30",
-    phone: "02-3456-7890",
-    description: "전통 한식의 진수를 맛볼 수 있는 고급 한정식집",
-    isRecommended: false,
-  },
-  {
-    id: 4,
-    name: "스시 오마카세",
-    category: "일식",
-    rating: 4.7,
-    reviewCount: 156,
-    priceRange: "₩₩₩₩",
-    location: "강남구 청담동",
-    distance: "1.8km",
-    image: "/sushi-omakase.png",
-    tags: ["스시", "오마카세", "신선", "고급"],
-    openHours: "18:00 - 23:00",
-    phone: "02-4567-8901",
-    description: "신선한 재료로 만드는 프리미엄 스시 오마카세",
-    isRecommended: true,
-  },
-  {
-    id: 5,
-    name: "차이나타운",
-    category: "중식",
-    rating: 4.5,
-    reviewCount: 98,
-    priceRange: "₩₩₩",
-    location: "중구 명동",
-    distance: "1.5km",
-    image: "/chinese-restaurant-interior.png",
-    tags: ["짜장면", "탕수육", "딤섬", "가족"],
-    openHours: "11:30 - 21:00",
-    phone: "02-5678-9012",
-    description: "정통 중화요리를 맛볼 수 있는 전통 중식당",
-    isRecommended: false,
-  },
-]
+function buildMock(): Restaurant {
+  return {
+    id: 999999,
+    name: "목업) 밥맛 좋은집",
+    category: "KOREAN",
+    address: "서울 어딘가 123",
+    telephone: "02-000-0000",
+    is_sponsored: true,
+  };
+}
+
+const koToServerCat = (k?: string) => {
+  switch (k) {
+    case "한식": return "KOREAN";
+    case "일식": return "JAPANESE";
+    case "중식": return "CHINESE";
+    case "양식": return "WESTERN";
+    default:     return undefined;
+  }
+};
+const serverToKoCat = (c?: string) => {
+  const v = (c || "").toUpperCase();
+  if (v === "KOREAN")   return "한식";
+  if (v === "JAPANESE") return "일식";
+  if (v === "CHINESE")  return "중식";
+  return "양식";
+};
 
 export default function RestaurantsPage() {
-  const router = useRouter()
-  const [restaurants, setRestaurants] = useState(mockRestaurants)
-  const [searchTerm, setSearchTerm] = useState("")
-  const [selectedCategory, setSelectedCategory] = useState("전체")
+  const router = useRouter();
 
-  const categories = ["전체", "한식", "일식", "중식", "양식"]
+  const [serverList, setServerList] = useState<Restaurant[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [recommendedOnly, setRecommendedOnly] = useState(false);
 
-  const filteredRestaurants = restaurants.filter((restaurant) => {
-    const matchesSearch =
-      restaurant.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      restaurant.category.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      restaurant.location.toLowerCase().includes(searchTerm.toLowerCase())
-    const matchesCategory = selectedCategory === "전체" || restaurant.category === selectedCategory
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("전체");
+  const categories = ["전체", "한식", "일식", "중식", "양식"];
 
-    return matchesSearch && matchesCategory
-  })
+  const [page, setPage] = useState(1);
+  const limit = 5;
+  const [hasNext, setHasNext] = useState(false);
+
+  // 필터/검색 바뀌면 1페이지로
+  useEffect(() => { setPage(1); }, [recommendedOnly, selectedCategory, searchTerm]);
+
+  useEffect(() => {
+    let canceled = false;
+    (async () => {
+      try {
+        setLoading(true);
+        setErr(null);
+
+        const categoryCode = koToServerCat(selectedCategory);
+        let resp;
+
+        if (categoryCode) {
+          resp = await restaurantsRepository.collectByCategory({
+            page,
+            limit,
+            category: categoryCode,
+            q: searchTerm.trim() || undefined,
+            sponsoredOnly: recommendedOnly ? 1 : 0,
+            maxPages: 50,
+          });
+        } else {
+          resp = await restaurantsRepository.getRestaurants({
+            page,
+            limit,
+            q: searchTerm.trim() || undefined,
+            sponsoredOnly: recommendedOnly ? 1 : 0,
+          });
+        }
+
+        if (canceled) return;
+
+        const list = resp.items ?? [];
+
+        // ✅ 정책
+        // - 첫 페이지 & 비어있음 → 목업 + 안내
+        // - 그 외(2페이지 이상 비어있음) → 목업 표시 X, 빈 상태 + 다음 비활성
+        if (list.length === 0) {
+          setHasNext(false);
+          if (page === 1) {
+            setErr("검색 결과가 비어 있어 목업 데이터를 보여드립니다.");
+            setServerList([buildMock()]);
+          } else {
+            setErr(null);           // 오류 아님
+            setServerList([]);      // 빈 상태
+          }
+        } else {
+          setServerList(list);
+          setHasNext(Boolean(resp.hasNext));
+        }
+      } catch (e: any) {
+        if (!canceled) {
+          setErr(e?.message || "식당 목록을 불러오지 못했습니다.");
+          setServerList([buildMock()]);
+          setHasNext(false);
+        }
+      } finally {
+        if (!canceled) setLoading(false);
+      }
+    })();
+    return () => { canceled = true; };
+  }, [recommendedOnly, selectedCategory, searchTerm, page]);
+
+  const viewList = useMemo(() => {
+    return serverList.map((r) => ({
+      id: r.id,
+      name: r.name,
+      category: serverToKoCat(r.category),
+      location: r.address,
+      phone: r.telephone ?? undefined,
+      isRecommended: !!r.is_sponsored,
+      rating: undefined as number | undefined,
+      reviewCount: undefined as number | undefined,
+      openHours: undefined as string | undefined,
+    }));
+  }, [serverList]);
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
       <header className="sticky top-0 z-50 bg-card border-b border-border">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center space-x-4">
@@ -120,12 +140,21 @@ export default function RestaurantsPage() {
               <ArrowLeft className="w-4 h-4" />
             </Button>
             <h1 className="text-xl font-semibold">식당 찾기</h1>
+            <div className="ml-auto">
+              <Button
+                size="sm"
+                variant={recommendedOnly ? "default" : "outline"}
+                onClick={() => setRecommendedOnly((v) => !v)}
+              >
+                {recommendedOnly ? "추천만 보기 ON" : "추천만 보기 OFF"}
+              </Button>
+            </div>
           </div>
         </div>
       </header>
 
       <div className="container mx-auto px-4 py-6 max-w-4xl">
-        {/* Search */}
+        {/* 검색 */}
         <div className="mb-6">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
@@ -138,6 +167,7 @@ export default function RestaurantsPage() {
           </div>
         </div>
 
+        {/* 카테고리 */}
         <div className="mb-6 bg-card p-4 rounded-lg border">
           <h3 className="text-sm font-medium text-muted-foreground mb-3">카테고리</h3>
           <div className="flex flex-wrap gap-2">
@@ -155,10 +185,18 @@ export default function RestaurantsPage() {
           </div>
         </div>
 
-        {/* Directly display restaurant list */}
+        {/* 에러(실패/초기비어있음) 배너 */}
+        {err && (
+          <div className="mb-4 p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
+            {err}
+          </div>
+        )}
+
+        {loading && <div className="text-sm text-muted-foreground">불러오는 중...</div>}
+
         <div className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
-            {filteredRestaurants.map((restaurant) => (
+            {viewList.map((restaurant) => (
               <Card
                 key={restaurant.id}
                 className="cursor-pointer hover:shadow-lg transition-shadow"
@@ -169,7 +207,6 @@ export default function RestaurantsPage() {
                     <Badge className="inline-block">추천</Badge>
                   </div>
                 )}
-
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex-1">
@@ -178,39 +215,29 @@ export default function RestaurantsPage() {
                         <Badge variant="outline" className="text-xs">
                           {restaurant.category}
                         </Badge>
-                        <span>{restaurant.priceRange}</span>
                       </div>
                     </div>
-                    <div className="flex items-center space-x-1">
-                      <Star className="w-4 h-4 fill-current text-yellow-500" />
-                      <span className="font-medium">{restaurant.rating}</span>
-                      <span className="text-sm text-muted-foreground">({restaurant.reviewCount})</span>
-                    </div>
+                    {restaurant.rating && (
+                      <div className="flex items-center space-x-1">
+                        <Star className="w-4 h-4 fill-current" />
+                        <span className="font-medium">{restaurant.rating}</span>
+                        {restaurant.reviewCount && (
+                          <span className="text-sm text-muted-foreground">({restaurant.reviewCount})</span>
+                        )}
+                      </div>
+                    )}
                   </div>
-
-                  <p className="text-sm text-muted-foreground mb-3 line-clamp-2">{restaurant.description}</p>
 
                   <div className="flex items-center space-x-4 text-sm text-muted-foreground mb-3">
                     <div className="flex items-center">
                       <MapPin className="w-3 h-3 mr-1" />
-                      {restaurant.location} • {restaurant.distance}
+                      {restaurant.location}
                     </div>
-                    <div className="flex items-center">
-                      <Clock className="w-3 h-3 mr-1" />
-                      {restaurant.openHours}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-1">
-                    {restaurant.tags.slice(0, 3).map((tag, index) => (
-                      <Badge key={index} variant="secondary" className="text-xs">
-                        #{tag}
-                      </Badge>
-                    ))}
-                    {restaurant.tags.length > 3 && (
-                      <Badge variant="secondary" className="text-xs">
-                        +{restaurant.tags.length - 3}
-                      </Badge>
+                    {restaurant.openHours && (
+                      <div className="flex items-center">
+                        <Clock className="w-3 h-3 mr-1" />
+                        {restaurant.openHours}
+                      </div>
                     )}
                   </div>
                 </CardContent>
@@ -218,14 +245,35 @@ export default function RestaurantsPage() {
             ))}
           </div>
 
-          {filteredRestaurants.length === 0 && (
+          {/* 빈 페이지(2p+) 메시지 */}
+          {!loading && !err && viewList.length === 0 && (
             <div className="text-center py-12">
-              <p className="text-muted-foreground text-lg">검색 결과가 없습니다.</p>
-              <p className="text-muted-foreground">다른 키워드로 검색해보세요.</p>
+              <p className="text-muted-foreground text-lg">이 페이지에는 더 이상 결과가 없어요.</p>
             </div>
           )}
+
+          {/* 페이지네이션 */}
+          <div className="flex items-center justify-center gap-3 mt-4">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              이전
+            </Button>
+            <span className="text-sm text-muted-foreground">페이지 {page}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!hasNext}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              다음
+            </Button>
+          </div>
         </div>
       </div>
     </div>
-  )
+  );
 }

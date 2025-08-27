@@ -1,206 +1,336 @@
-"use client"
+// app/profile/[userId]/page.tsx
+"use client";
 
-import { useState } from "react"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Textarea } from "@/components/ui/textarea"
-import { ArrowLeft, Star, CheckCircle } from "lucide-react"
-import { useRouter, useParams } from "next/navigation"
-import { useNotifications } from "@/components/notification-context"
+import { useEffect, useMemo, useState } from "react";
+import { useRouter, useParams } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ArrowLeft, Star, MapPin, Calendar, Users, Flag } from "lucide-react";
+import { apiRequest, userAPI, reviewAPI } from "@/lib/api";
 
-const mockParticipants = [
-  {
-    id: 1,
-    name: "김민수",
-    avatar: "/placeholder.svg?height=40&width=40",
-    isHost: true,
-  },
-  {
-    id: 3,
-    name: "박준호",
-    avatar: "/placeholder.svg?height=40&width=40",
-    isHost: false,
-  },
-]
+type UserProfile = {
+  id: number | string;
+  name: string;
+  avatar?: string | null;
+  bio?: string | null;
+  location?: string | null;
+  joinDate?: string | null;
+  rating?: number | null;
+  reviewCount?: number | null;
+  completedMeals?: number | null;
+  hostedMeals?: number | null;
+};
 
-export default function ReviewPage() {
-  const router = useRouter()
-  const params = useParams()
-  const { notifications, deleteNotification } = useNotifications()
-  const [reviews, setReviews] = useState<Record<string, { rating: number; comment: string }>>({})
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isCompleted, setIsCompleted] = useState(false)
+type RecentEvent = {
+  id: number | string;
+  title: string;
+  date: string;
+  status: "upcoming" | "completed";
+  participants?: number | null;
+};
 
-  const handleRatingChange = (userId: string, rating: number) => {
-    setReviews((prev) => ({
-      ...prev,
-      [userId]: { ...prev[userId], rating },
-    }))
-  }
+type ReceivedReview = {
+  id: number | string;
+  reviewer: { name: string; avatar?: string | null };
+  rating: number;
+  comment?: string | null;
+  date: string;
+};
 
-  const handleCommentChange = (userId: string, comment: string) => {
-    setReviews((prev) => ({
-      ...prev,
-      [userId]: { ...prev[userId], comment },
-    }))
-  }
+function mapUserFromApi(raw: any): UserProfile {
+  return {
+    id: raw?.id ?? raw?._id ?? "user",
+    name: raw?.nickname ?? raw?.name ?? "이름 없음",
+    avatar: raw?.profile_img ?? raw?.avatar ?? null,
+    bio: raw?.bio ?? null,
+    location: raw?.location ?? null,
+    joinDate: raw?.created_at ?? raw?.createdAt ?? null,
+    rating: raw?.rating ?? null,
+    reviewCount: raw?.reviewCount ?? raw?.reviews_count ?? null,
+    completedMeals: raw?.completedMeals ?? raw?.completed_meals ?? null,
+    hostedMeals: raw?.hostedMeals ?? raw?.hosted_meals ?? null,
+  };
+}
+function mapEventFromApi(raw: any): RecentEvent {
+  const dt = raw?.start_at ?? raw?.date ?? raw?.created_at ?? new Date().toISOString();
+  const done = Boolean(raw?.is_completed ?? raw?.completed);
+  return {
+    id: raw?.id ?? raw?._id ?? Math.random().toString(36).slice(2),
+    title: raw?.title ?? raw?.name ?? "제목 없음",
+    date: typeof dt === "string" ? dt : new Date().toISOString(),
+    status: done ? "completed" : "upcoming",
+    participants: raw?.current_participants ?? raw?.participants ?? null,
+  };
+}
+function mapReviewFromApi(raw: any): ReceivedReview {
+  const dt = raw?.created_at ?? raw?.date ?? new Date().toISOString();
+  const reviewerName =
+    raw?.reviewer?.nickname ?? raw?.reviewer?.name ?? raw?.fromUser?.nickname ?? "익명";
+  const reviewerAvatar =
+    raw?.reviewer?.avatar ?? raw?.reviewer?.profile_img ?? raw?.fromUser?.avatar ?? null;
+  return {
+    id: raw?.id ?? raw?._id ?? Math.random().toString(36).slice(2),
+    reviewer: { name: reviewerName, avatar: reviewerAvatar },
+    rating: Number(raw?.score ?? raw?.rating ?? 0),
+    comment: raw?.comment ?? raw?.content ?? null,
+    date: typeof dt === "string" ? dt : new Date().toISOString(),
+  };
+}
+function asArray(data: any): any[] {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.events)) return data.events;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.results)) return data.results;
+  if (Array.isArray(data?.success?.lists)) return data.success.lists;
+  return [];
+}
 
-  const handleSubmitReviews = async () => {
-    setIsSubmitting(true)
-    try {
-      // Mock API call - replace with actual API call to POST /api/reviews/{userId}
-      console.log("Submitting reviews:", reviews)
-      await new Promise((resolve) => setTimeout(resolve, 1000))
+export default function UserProfilePage() {
+  const router = useRouter();
+  const params = useParams();
+  const uid = String(params?.userId ?? "").trim();
 
-      const reviewNotifications = notifications.filter(
-        (notif) => notif.type === "review_request" && notif.actionData?.eventId === params.eventId,
-      )
-      reviewNotifications.forEach((notif) => deleteNotification(notif.id))
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [recentEvents, setRecentEvents] = useState<RecentEvent[]>([]);
+  const [reviews, setReviews] = useState<ReceivedReview[]>([]);
 
-      setIsCompleted(true)
-    } catch (error) {
-      console.error("Failed to submit reviews:", error)
-    } finally {
-      setIsSubmitting(false)
+  useEffect(() => {
+    let canceled = false;
+
+    const uidNum = Number(uid);
+    const hasValidId = Number.isFinite(uidNum);
+
+    if (!hasValidId) {
+      setErr("잘못된 사용자 ID 입니다.");
+      setProfile(null);
+      setRecentEvents([]);
+      setReviews([]);
+      setLoading(false);
+      return;
     }
-  }
 
-  const canSubmit = mockParticipants.every((participant) => reviews[participant.id]?.rating > 0)
+    (async () => {
+      try {
+        setErr(null);
+        setLoading(true);
 
-  if (isCompleted) {
+        // 병렬 호출
+        const [user, evRes, userReviews] = await Promise.all([
+          userAPI.getUserProfile(uidNum).catch((e: any) => {
+            console.error("[user] load failed:", e);
+            return null;
+          }),
+
+          // ⚠️ 백엔드가 /api/events?userId=... 를 지원하지 않을 수도 있음.
+          // 필요시 아래 주석을 실제 라우트로 바꿔주세요.
+          apiRequest(`/api/events?userId=${encodeURIComponent(uid)}&page=1&limit=10`).catch(
+            (e: any) => {
+              console.error("[events] load failed:", e);
+              return null;
+            }
+          ),
+
+          // ✅ type=received 명시 (서버가 요구할 수 있음)
+          reviewAPI
+            .getUserReviews(uidNum, 1, 10, "received")
+            .catch((e: any) => {
+              console.error("[reviews] load failed:", e);
+              return { data: [] };
+            }),
+        ]);
+
+        if (canceled) return;
+
+        setProfile(user ? mapUserFromApi(user) : null);
+        setRecentEvents(asArray(evRes).slice(0, 5).map(mapEventFromApi));
+        setReviews(asArray(userReviews).slice(0, 5).map(mapReviewFromApi));
+      } catch (e: any) {
+        if (!canceled) setErr(e?.message || "프로필을 불러오지 못했습니다.");
+      } finally {
+        if (!canceled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, [uid]);
+
+  const joined = useMemo(() => {
+    if (!profile?.joinDate) return "-";
+    try {
+      return new Date(profile.joinDate).toLocaleDateString("ko-KR", {
+        year: "numeric",
+        month: "long",
+      }) + " 가입";
+    } catch {
+      return "-";
+    }
+  }, [profile?.joinDate]);
+
+  if (loading) {
     return (
-      <div className="min-h-screen bg-background">
-        <header className="sticky top-0 z-50 bg-card border-b border-border">
-          <div className="container mx-auto px-4 py-4">
-            <div className="flex items-center space-x-4">
-              <Button variant="ghost" size="sm" onClick={() => router.push("/")}>
-                <ArrowLeft className="w-4 h-4" />
-              </Button>
-              <div>
-                <h1 className="text-xl font-semibold">리뷰 완료</h1>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        <div className="container mx-auto px-4 py-6 max-w-2xl">
-          <div className="flex flex-col items-center justify-center py-12">
-            <CheckCircle className="w-16 h-16 text-green-500 mb-4" />
-            <h2 className="text-2xl font-semibold mb-2">리뷰가 완료되었습니다!</h2>
-            <p className="text-muted-foreground text-center mb-8 max-w-md">
-              소중한 리뷰를 작성해주셔서 감사합니다. 여러분의 피드백이 더 나은 밥약 문화를 만들어갑니다.
-            </p>
-            <div className="space-y-3 w-full max-w-sm">
-              <Button onClick={() => router.push("/")} className="w-full">
-                홈으로 돌아가기
-              </Button>
-              <Button variant="outline" onClick={() => router.push("/profile")} className="w-full bg-transparent">
-                내 프로필 보기
-              </Button>
-            </div>
-          </div>
-        </div>
+      <div className="min-h-screen bg-background flex items-center justify-center text-muted-foreground">
+        불러오는 중...
       </div>
-    )
+    );
   }
 
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-50 bg-card border-b border-border">
         <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center space-x-4">
-            <Button variant="ghost" size="sm" onClick={() => router.back()}>
-              <ArrowLeft className="w-4 h-4" />
-            </Button>
-            <div>
-              <h1 className="text-xl font-semibold">리뷰 작성</h1>
-              <p className="text-sm text-muted-foreground">함께한 참여자들에 대한 리뷰를 작성해주세요</p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <Button variant="ghost" size="sm" onClick={() => router.back()}>
+                <ArrowLeft className="w-4 h-4" />
+              </Button>
+              <h1 className="text-xl font-semibold">{profile?.name ?? "프로필"}</h1>
             </div>
+            <Button variant="ghost" size="sm" title="신고">
+              <Flag className="w-4 h-4" />
+            </Button>
           </div>
         </div>
       </header>
 
-      <div className="container mx-auto px-4 py-6 max-w-2xl">
-        <div className="space-y-6">
-          {mockParticipants.map((participant) => (
-            <Card key={participant.id}>
-              <CardHeader>
-                <div className="flex items-center space-x-3">
-                  <Avatar className="w-12 h-12">
-                    <AvatarImage src={participant.avatar || "/placeholder.svg"} />
-                    <AvatarFallback>{participant.name[0]}</AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <CardTitle className="text-lg">{participant.name}</CardTitle>
-                    {participant.isHost && <p className="text-sm text-muted-foreground">호스트</p>}
+      <div className="container mx-auto px-4 py-6 max-w-4xl">
+        <Card className="mb-6">
+          <CardContent className="pt-6">
+            {err && (
+              <div className="mb-4 p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
+                {err}
+              </div>
+            )}
+
+            <div className="flex flex-col md:flex-row items-center md:items-start space-y-4 md:space-y-0 md:space-x-6">
+              <Avatar className="w-24 h-24">
+                <AvatarImage src={profile?.avatar || "/placeholder.svg"} />
+                <AvatarFallback className="text-2xl">
+                  {(profile?.name ?? "N")[0]}
+                </AvatarFallback>
+              </Avatar>
+
+              <div className="flex-1 text-center md:text-left">
+                <h2 className="text-2xl font-bold mb-2">{profile?.name ?? "이름 없음"}</h2>
+
+                <div className="flex items-center justify-center md:justify-start space-x-4 text-sm text-muted-foreground mb-3">
+                  <div className="flex items-center">
+                    <MapPin className="w-4 h-4 mr-1" />
+                    {profile?.location ?? "-"}
+                  </div>
+                  <div className="flex items-center">
+                    <Calendar className="w-4 h-4 mr-1" />
+                    {joined}
                   </div>
                 </div>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-sm font-medium mb-2 block">평점</label>
-                    <div className="flex space-x-1">
-                      {[1, 2, 3, 4, 5].map((star) => (
-                        <button
-                          key={star}
-                          type="button"
-                          onClick={() => handleRatingChange(participant.id.toString(), star)}
-                          className="p-1 hover:scale-110 transition-transform"
-                        >
-                          <Star
-                            className={`w-6 h-6 ${
-                              (reviews[participant.id]?.rating || 0) >= star
-                                ? "fill-yellow-400 text-yellow-400"
-                                : "text-gray-300 hover:text-yellow-200"
-                            }`}
-                          />
-                        </button>
-                      ))}
+
+                <div className="flex items-center justify-center md:justify-start space-x-6 mb-4">
+                  <div className="text-center">
+                    <div className="flex items-center justify-center space-x-1">
+                      <Star className="w-4 h-4 fill-current text-yellow-500" />
+                      <span className="font-semibold">{profile?.rating ?? "-"}</span>
                     </div>
-                    {reviews[participant.id]?.rating > 0 && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {reviews[participant.id].rating === 5
-                          ? "최고예요!"
-                          : reviews[participant.id].rating === 4
-                            ? "좋아요!"
-                            : reviews[participant.id].rating === 3
-                              ? "보통이에요"
-                              : reviews[participant.id].rating === 2
-                                ? "아쉬워요"
-                                : "별로예요"}
-                      </p>
-                    )}
+                    <span className="text-xs text-muted-foreground">
+                      {(profile?.reviewCount ?? reviews.length)}개 리뷰
+                    </span>
                   </div>
-                  <div>
-                    <label className="text-sm font-medium mb-2 block">리뷰 (선택사항)</label>
-                    <Textarea
-                      placeholder="함께한 경험에 대해 간단히 작성해주세요..."
-                      value={reviews[participant.id]?.comment || ""}
-                      onChange={(e) => handleCommentChange(participant.id.toString(), e.target.value)}
-                      rows={3}
-                    />
+                  <div className="text-center">
+                    <div className="font-semibold">{profile?.completedMeals ?? 0}</div>
+                    <span className="text-xs text-muted-foreground">완료한 밥약</span>
+                  </div>
+                  <div className="text-center">
+                    <div className="font-semibold">{profile?.hostedMeals ?? 0}</div>
+                    <span className="text-xs text-muted-foreground">주최한 밥약</span>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
 
-        <div className="mt-8 flex gap-3">
-          <Button variant="outline" className="flex-1 bg-transparent" onClick={() => router.push("/")}>
-            나중에 작성
-          </Button>
-          <Button className="flex-1" onClick={handleSubmitReviews} disabled={!canSubmit || isSubmitting}>
-            {isSubmitting ? "제출 중..." : "리뷰 제출"}
-          </Button>
-        </div>
+                {profile?.bio && (
+                  <p className="text-muted-foreground leading-relaxed mb-2">{profile.bio}</p>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
-        {!canSubmit && (
-          <p className="text-center text-sm text-muted-foreground mt-4">모든 참여자에 대한 평점을 선택해주세요</p>
-        )}
+        <Tabs defaultValue="events" className="space-y-4">
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="events">최근 밥약</TabsTrigger>
+            <TabsTrigger value="reviews">받은 리뷰</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="events" className="space-y-4">
+            {recentEvents.length === 0 ? (
+              <div className="text-sm text-muted-foreground">최근 밥약이 없습니다.</div>
+            ) : (
+              recentEvents.map((ev) => (
+                <Card key={ev.id} className="hover:shadow-md transition-shadow">
+                  <CardContent className="pt-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <h3 className="font-semibold mb-1">{ev.title}</h3>
+                        <div className="flex items-center space-x-4 text-sm text-muted-foreground">
+                          <span>{new Date(ev.date).toLocaleDateString("ko-KR")}</span>
+                          {ev.participants != null && (
+                            <div className="flex items-center">
+                              <Users className="w-3 h-3 mr-1" />
+                              {ev.participants}명 참여
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <Badge variant={ev.status === "completed" ? "secondary" : "default"}>
+                        {ev.status === "completed" ? "완료" : "예정"}
+                      </Badge>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))
+            )}
+          </TabsContent>
+
+          <TabsContent value="reviews" className="space-y-4">
+            {reviews.length === 0 ? (
+              <div className="text-sm text-muted-foreground">받은 리뷰가 없습니다.</div>
+            ) : (
+              reviews.map((rv) => (
+                <Card key={rv.id}>
+                  <CardContent className="pt-4">
+                    <div className="flex items-start space-x-3">
+                      <Avatar className="w-10 h-10">
+                        <AvatarImage src={rv.reviewer.avatar || "/placeholder.svg"} />
+                        <AvatarFallback>{rv.reviewer.name[0] ?? "U"}</AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1">
+                        <div className="flex items-center space-x-2 mb-2">
+                          <span className="font-medium">{rv.reviewer.name}</span>
+                          <div className="flex items-center">
+                            {[...Array(5)].map((_, i) => (
+                              <Star
+                                key={i}
+                                className={`w-3 h-3 ${i < (rv.rating || 0) ? "fill-current text-yellow-500" : "text-gray-300"}`}
+                              />
+                            ))}
+                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(rv.date).toLocaleDateString("ko-KR")}
+                          </span>
+                        </div>
+                        {rv.comment && <p className="text-sm text-muted-foreground">{rv.comment}</p>}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
-  )
+  );
 }

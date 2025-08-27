@@ -1,70 +1,153 @@
-"use client"
+// app/profile/[userId]/page.tsx
+"use client";
 
-import { useState } from "react"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ArrowLeft, Star, MapPin, Calendar, Users, Flag } from "lucide-react"
-import { useRouter, useParams } from "next/navigation"
+import { useEffect, useMemo, useState } from "react";
+import { useRouter, useParams } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ArrowLeft, Star, MapPin, Calendar, Users, Flag } from "lucide-react";
 
-// Mock other user profile data
-const mockOtherProfile = {
-  id: 2,
-  name: "이지은",
-  avatar: "/placeholder.svg?height=120&width=120",
-  bio: "새로운 맛집 발견하는 것을 좋아하고, 다양한 사람들과 이야기 나누는 것을 즐깁니다.",
-  location: "서울 홍대",
-  joinDate: "2023-08-20",
-  rating: 4.9,
-  reviewCount: 31,
-  completedMeals: 67,
-  hostedMeals: 18,
-  recentEvents: [
-    {
-      id: 1,
-      title: "홍대 브런치 모임",
-      date: "2024-01-21",
-      status: "upcoming",
-      participants: 4,
-    },
-    {
-      id: 2,
-      title: "신촌 파스타 맛집",
-      date: "2024-01-18",
-      status: "completed",
-      participants: 3,
-    },
-  ],
-  reviews: [
-    {
-      id: 1,
-      reviewer: {
-        name: "김민수",
-        avatar: "/placeholder.svg?height=32&width=32",
-      },
-      rating: 5,
-      comment: "정말 재미있는 분이시고 맛집 추천도 최고였어요!",
-      date: "2024-01-19",
-    },
-    {
-      id: 2,
-      reviewer: {
-        name: "박준호",
-        avatar: "/placeholder.svg?height=32&width=32",
-      },
-      rating: 5,
-      comment: "대화가 즐거웠고 다음에 또 만나고 싶어요.",
-      date: "2024-01-12",
-    },
-  ],
+import { apiRequest, userAPI, reviewAPI } from "@/lib/api";
+
+// ── 화면용 타입 ──────────────────────────────────────────────
+type UserProfile = {
+  id: number | string;
+  name: string;
+  avatar?: string | null;
+  bio?: string | null;
+  location?: string | null;
+  joinDate?: string | null;
+  rating?: number | null;
+  reviewCount?: number | null;
+  completedMeals?: number | null;
+  hostedMeals?: number | null;
+};
+
+type RecentEvent = {
+  id: number | string;
+  title: string;
+  date: string;
+  status: "upcoming" | "completed";
+  participants?: number | null;
+};
+
+type ReceivedReview = {
+  id: number | string;
+  reviewer: { name: string; avatar?: string | null };
+  rating: number;
+  comment?: string | null;
+  date: string;
+};
+
+// ── 매핑 헬퍼 ───────────────────────────────────────────────
+function mapUserFromApi(raw: any): UserProfile {
+  return {
+    id: raw?.id ?? raw?._id ?? "user",
+    name: raw?.nickname ?? raw?.name ?? "이름 없음",
+    avatar: raw?.profile_img ?? raw?.avatar ?? null,
+    bio: raw?.bio ?? null,
+    location: raw?.location ?? null,
+    joinDate: raw?.created_at ?? raw?.createdAt ?? null,
+    rating: raw?.rating ?? null,
+    reviewCount: raw?.reviewCount ?? raw?.reviews_count ?? null,
+    completedMeals: raw?.completedMeals ?? raw?.completed_meals ?? null,
+    hostedMeals: raw?.hostedMeals ?? raw?.hosted_meals ?? null,
+  };
+}
+function mapEventFromApi(raw: any): RecentEvent {
+  const dt = raw?.start_at ?? raw?.date ?? raw?.created_at ?? new Date().toISOString();
+  const done = Boolean(raw?.is_completed ?? raw?.completed);
+  return {
+    id: raw?.id ?? raw?._id ?? Math.random().toString(36).slice(2),
+    title: raw?.title ?? raw?.name ?? "제목 없음",
+    date: typeof dt === "string" ? dt : new Date().toISOString(),
+    status: done ? "completed" : "upcoming",
+    participants: raw?.current_participants ?? raw?.participants ?? null,
+  };
+}
+function mapReviewFromApi(raw: any): ReceivedReview {
+  const dt = raw?.created_at ?? raw?.date ?? new Date().toISOString();
+  const reviewerName =
+    raw?.reviewer?.nickname ?? raw?.reviewer?.name ?? raw?.fromUser?.nickname ?? "익명";
+  const reviewerAvatar = raw?.reviewer?.avatar ?? raw?.reviewer?.profile_img ?? raw?.fromUser?.avatar ?? null;
+  return {
+    id: raw?.id ?? raw?._id ?? Math.random().toString(36).slice(2),
+    reviewer: { name: reviewerName, avatar: reviewerAvatar },
+    rating: Number(raw?.score ?? raw?.rating ?? 0),
+    comment: raw?.comment ?? raw?.content ?? null,
+    date: typeof dt === "string" ? dt : new Date().toISOString(),
+  };
 }
 
+function asArray(data: any): any[] {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.events)) return data.events;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.results)) return data.results;
+  if (Array.isArray(data?.success?.lists)) return data.success.lists;
+  return [];
+}
+
+// ── 페이지 ─────────────────────────────────────────────────
 export default function UserProfilePage() {
-  const router = useRouter()
-  const params = useParams()
-  const [profile, setProfile] = useState(mockOtherProfile)
+  const router = useRouter();
+  const params = useParams();
+  const uid = String(params?.userId ?? "").trim();
+
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [recentEvents, setRecentEvents] = useState<RecentEvent[]>([]);
+  const [reviews, setReviews] = useState<ReceivedReview[]>([]);
+
+  useEffect(() => {
+    let canceled = false;
+    (async () => {
+      try {
+        setErr(null);
+        setLoading(true);
+
+        // ① 사용자 기본 정보
+        const user = await userAPI.getUserProfile(Number(uid)).catch(() => null);
+        const mapped = user ? mapUserFromApi(user) : null;
+        if (!canceled) setProfile(mapped);
+
+        // ② 최근 밥약 (userId 파라미터 직접 쿼리)
+        const evRes = await apiRequest(
+          `/api/events?userId=${encodeURIComponent(uid)}&page=1&limit=10`
+        ).catch(() => null);
+        if (!canceled) setRecentEvents(asArray(evRes).slice(0, 5).map(mapEventFromApi));
+
+        // ③ 받은 리뷰
+        const userReviews = await reviewAPI.getUserReviews(Number(uid), 1, 10).catch(() => ({ data: [] }));
+        if (!canceled) setReviews(asArray(userReviews).slice(0, 5).map(mapReviewFromApi));
+      } catch (e: any) {
+        if (!canceled) setErr(e?.message || "프로필을 불러오지 못했습니다.");
+      } finally {
+        if (!canceled) setLoading(false);
+      }
+    })();
+    return () => { canceled = true; };
+  }, [uid]);
+
+  const joined = useMemo(() => {
+    if (!profile?.joinDate) return "-";
+    try {
+      return new Date(profile.joinDate).toLocaleDateString("ko-KR", { year: "numeric", month: "long" }) + " 가입";
+    } catch { return "-"; }
+  }, [profile?.joinDate]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center text-muted-foreground">
+        불러오는 중...
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -76,9 +159,11 @@ export default function UserProfilePage() {
               <Button variant="ghost" size="sm" onClick={() => router.back()}>
                 <ArrowLeft className="w-4 h-4" />
               </Button>
-              <h1 className="text-xl font-semibold">{profile.name}님의 프로필</h1>
+              <h1 className="text-xl font-semibold">
+                {profile?.name ?? "프로필"}
+              </h1>
             </div>
-            <Button variant="ghost" size="sm">
+            <Button variant="ghost" size="sm" title="신고">
               <Flag className="w-4 h-4" />
             </Button>
           </div>
@@ -86,25 +171,34 @@ export default function UserProfilePage() {
       </header>
 
       <div className="container mx-auto px-4 py-6 max-w-4xl">
-        {/* Profile Header */}
         <Card className="mb-6">
           <CardContent className="pt-6">
+            {/* 에러 배너 */}
+            {err && (
+              <div className="mb-4 p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
+                {err}
+              </div>
+            )}
+
             <div className="flex flex-col md:flex-row items-center md:items-start space-y-4 md:space-y-0 md:space-x-6">
               <Avatar className="w-24 h-24">
-                <AvatarImage src={profile.avatar || "/placeholder.svg"} />
-                <AvatarFallback className="text-2xl">{profile.name[0]}</AvatarFallback>
+                <AvatarImage src={profile?.avatar || "/placeholder.svg"} />
+                <AvatarFallback className="text-2xl">
+                  {(profile?.name ?? "N")[0]}
+                </AvatarFallback>
               </Avatar>
 
               <div className="flex-1 text-center md:text-left">
-                <h2 className="text-2xl font-bold mb-2">{profile.name}</h2>
+                <h2 className="text-2xl font-bold mb-2">{profile?.name ?? "이름 없음"}</h2>
+
                 <div className="flex items-center justify-center md:justify-start space-x-4 text-sm text-muted-foreground mb-3">
                   <div className="flex items-center">
                     <MapPin className="w-4 h-4 mr-1" />
-                    {profile.location}
+                    {profile?.location ?? "-"}
                   </div>
                   <div className="flex items-center">
                     <Calendar className="w-4 h-4 mr-1" />
-                    {new Date(profile.joinDate).toLocaleDateString("ko-KR", { year: "numeric", month: "long" })} 가입
+                    {joined}
                   </div>
                 </div>
 
@@ -112,27 +206,31 @@ export default function UserProfilePage() {
                   <div className="text-center">
                     <div className="flex items-center justify-center space-x-1">
                       <Star className="w-4 h-4 fill-current text-yellow-500" />
-                      <span className="font-semibold">{profile.rating}</span>
+                      <span className="font-semibold">{profile?.rating ?? "-"}</span>
                     </div>
-                    <span className="text-xs text-muted-foreground">{profile.reviewCount}개 리뷰</span>
+                    <span className="text-xs text-muted-foreground">
+                      {(profile?.reviewCount ?? reviews.length)}개 리뷰
+                    </span>
                   </div>
                   <div className="text-center">
-                    <div className="font-semibold">{profile.completedMeals}</div>
+                    <div className="font-semibold">{profile?.completedMeals ?? 0}</div>
                     <span className="text-xs text-muted-foreground">완료한 밥약</span>
                   </div>
                   <div className="text-center">
-                    <div className="font-semibold">{profile.hostedMeals}</div>
+                    <div className="font-semibold">{profile?.hostedMeals ?? 0}</div>
                     <span className="text-xs text-muted-foreground">주최한 밥약</span>
                   </div>
                 </div>
 
-                <p className="text-muted-foreground leading-relaxed mb-4">{profile.bio}</p>
+                {profile?.bio && (
+                  <p className="text-muted-foreground leading-relaxed mb-2">{profile.bio}</p>
+                )}
               </div>
             </div>
           </CardContent>
         </Card>
 
-        {/* Tabs for Events and Reviews */}
+        {/* 최근 밥약 / 받은 리뷰 */}
         <Tabs defaultValue="events" className="space-y-4">
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="events">최근 밥약</TabsTrigger>
@@ -140,64 +238,72 @@ export default function UserProfilePage() {
           </TabsList>
 
           <TabsContent value="events" className="space-y-4">
-            {profile.recentEvents.map((event) => (
-              <Card key={event.id} className="cursor-pointer hover:shadow-md transition-shadow">
-                <CardContent className="pt-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <h3 className="font-semibold mb-1">{event.title}</h3>
-                      <div className="flex items-center space-x-4 text-sm text-muted-foreground">
-                        <span>{new Date(event.date).toLocaleDateString("ko-KR")}</span>
-                        <div className="flex items-center">
-                          <Users className="w-3 h-3 mr-1" />
-                          {event.participants}명 참여
+            {recentEvents.length === 0 ? (
+              <div className="text-sm text-muted-foreground">최근 밥약이 없습니다.</div>
+            ) : (
+              recentEvents.map((ev) => (
+                <Card key={ev.id} className="hover:shadow-md transition-shadow">
+                  <CardContent className="pt-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <h3 className="font-semibold mb-1">{ev.title}</h3>
+                        <div className="flex items-center space-x-4 text-sm text-muted-foreground">
+                          <span>{new Date(ev.date).toLocaleDateString("ko-KR")}</span>
+                          {ev.participants != null && (
+                            <div className="flex items-center">
+                              <Users className="w-3 h-3 mr-1" />
+                              {ev.participants}명 참여
+                            </div>
+                          )}
                         </div>
                       </div>
+                      <Badge variant={ev.status === "completed" ? "secondary" : "default"}>
+                        {ev.status === "completed" ? "완료" : "예정"}
+                      </Badge>
                     </div>
-                    <Badge variant={event.status === "completed" ? "secondary" : "default"}>
-                      {event.status === "completed" ? "완료" : "예정"}
-                    </Badge>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                  </CardContent>
+                </Card>
+              ))
+            )}
           </TabsContent>
 
           <TabsContent value="reviews" className="space-y-4">
-            {profile.reviews.map((review) => (
-              <Card key={review.id}>
-                <CardContent className="pt-4">
-                  <div className="flex items-start space-x-3">
-                    <Avatar className="w-10 h-10">
-                      <AvatarImage src={review.reviewer.avatar || "/placeholder.svg"} />
-                      <AvatarFallback>{review.reviewer.name[0]}</AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1">
-                      <div className="flex items-center space-x-2 mb-2">
-                        <span className="font-medium">{review.reviewer.name}</span>
-                        <div className="flex items-center">
-                          {[...Array(5)].map((_, i) => (
-                            <Star
-                              key={i}
-                              className={`w-3 h-3 ${
-                                i < review.rating ? "fill-current text-yellow-500" : "text-gray-300"
-                              }`}
-                            />
-                          ))}
+            {reviews.length === 0 ? (
+              <div className="text-sm text-muted-foreground">받은 리뷰가 없습니다.</div>
+            ) : (
+              reviews.map((rv) => (
+                <Card key={rv.id}>
+                  <CardContent className="pt-4">
+                    <div className="flex items-start space-x-3">
+                      <Avatar className="w-10 h-10">
+                        <AvatarImage src={rv.reviewer.avatar || "/placeholder.svg"} />
+                        <AvatarFallback>{rv.reviewer.name[0]}</AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1">
+                        <div className="flex items-center space-x-2 mb-2">
+                          <span className="font-medium">{rv.reviewer.name}</span>
+                          <div className="flex items-center">
+                            {[...Array(5)].map((_, i) => (
+                              <Star
+                                key={i}
+                                className={`w-3 h-3 ${i < (rv.rating || 0) ? "fill-current text-yellow-500" : "text-gray-300"}`}
+                              />
+                            ))}
+                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(rv.date).toLocaleDateString("ko-KR")}
+                          </span>
                         </div>
-                        <span className="text-xs text-muted-foreground">
-                          {new Date(review.date).toLocaleDateString("ko-KR")}
-                        </span>
+                        {rv.comment && <p className="text-sm text-muted-foreground">{rv.comment}</p>}
                       </div>
-                      <p className="text-sm text-muted-foreground">{review.comment}</p>
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                  </CardContent>
+                </Card>
+              ))
+            )}
           </TabsContent>
         </Tabs>
       </div>
     </div>
-  )
+  );
 }

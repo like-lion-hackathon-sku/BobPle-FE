@@ -1,78 +1,143 @@
-"use client"
+// app/page.tsx
+"use client";
 
-import { useState, useEffect } from "react"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Input } from "@/components/ui/input"
-import { MapPin, Clock, Users, Plus, MessageCircle } from "lucide-react"
-import { useRouter } from "next/navigation"
-import { Search } from "lucide-react"
-import { eventAPI } from "@/lib/api"
+import { useState, useEffect } from "react"; // ← useMemo 제거
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Input } from "@/components/ui/input";
+import { MapPin, Clock, Users, Plus, MessageCircle, Search } from "lucide-react";
+import { eventAPI } from "@/lib/api";
 
-/**
- * 메인 홈페이지 컴포넌트
- * 밥약 목록을 보여주고 검색 기능을 제공
- */
+// ===== Types =====
+type EventHost = {
+  id?: number | string;
+  name: string;
+  avatar?: string | null;
+  rating?: number | null;
+};
+
+type EventItem = {
+  id: number | string;
+  title: string;
+  location?: string | null;
+  date: string;
+  startTime?: string | null;
+  endTime?: string | null;
+  currentParticipants?: number | null;
+  maxParticipants?: number | null;
+  description?: string | null;
+  restaurant?: string | null;
+  host: EventHost;
+};
+
+function mapEventFromApi(e: any): EventItem {
+  const startISO =
+    e?.start_at ?? e?.startAt ?? e?.startDateTime ?? e?.start ?? e?.date ?? new Date().toISOString();
+  const endISO =
+    e?.end_at ?? e?.endAt ?? e?.endDateTime ?? e?.end ?? null;
+  const toHHMM = (v?: string | null) => {
+    if (!v) return null;
+    const d = new Date(v);
+    if (isNaN(d.getTime())) return (String(v).match(/\d{1,2}:\d{2}/)?.[0] ?? null);
+    return d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+  };
+
+  return {
+    id: e?.id ?? e?.eventId ?? e?._id ?? String(Math.random()),
+    title: e?.title ?? "제목 없음",
+    location: e?.location ?? e?.place ?? null,
+    date: typeof startISO === "string" ? startISO : new Date().toISOString(),
+    startTime: toHHMM(startISO),
+    endTime: toHHMM(endISO),
+    currentParticipants:
+      e?.current_participants ?? e?.currentParticipants ?? e?.participants ?? null,
+    maxParticipants: e?.max_participants ?? e?.maxParticipants ?? null,
+    description: e?.content ?? e?.description ?? null,
+    restaurant: e?.restaurant ?? e?.restaurant_name ?? null,
+    host: {
+      id: e?.host?.id ?? e?.creator?.id ?? "host",
+      name: e?.host?.name ?? e?.creator?.name ?? "호스트",
+      avatar: e?.host?.avatar ?? e?.creator?.avatar ?? null,
+      rating: e?.host?.rating ?? null,
+    },
+  };
+}
+
+function buildMockEvent(): EventItem {
+  const s = new Date(Date.now() + 60 * 60 * 1000);
+  const e = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  return {
+    id: "mock-1",
+    title: "강남역 맛집 탐방 (목업)",
+    location: "강남역 2번 출구",
+    date: s.toISOString(),
+    startTime: s.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }),
+    endTime: e.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }),
+    currentParticipants: 1,
+    maxParticipants: 3,
+    description: "백엔드 준비 전 임시로 노출되는 목업 카드입니다.",
+    restaurant: "라 트라토리아",
+    host: { name: "테스트 호스트", rating: 4.8 },
+  };
+}
+
 export default function HomePage() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
-  const [events, setEvents] = useState([])
-  const [searchTerm, setSearchTerm] = useState("")
-  const [error, setError] = useState("")
-  const router = useRouter()
+  const router = useRouter();
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [events, setEvents] = useState<EventItem[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [error, setError] = useState("");
 
-  /**
-   * 컴포넌트 마운트 시 로그인 상태 확인 및 밥약 목록 로드
-   */
   useEffect(() => {
-    const checkLoginStatus = async () => {
-      const loginStatus = localStorage.getItem("isLoggedIn")
-      if (loginStatus === "true") {
-        setIsLoggedIn(true)
-        await loadEvents()
-      } else {
-        router.push("/login")
-      }
-      setIsLoading(false)
+    const flag = localStorage.getItem("isLoggedIn") === "true";
+    if (flag) {
+      setIsLoggedIn(true);
+      void loadEvents();
+    } else {
+      router.push("/login");
     }
+    setIsLoading(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    checkLoginStatus()
-  }, [router])
-
-  /**
-   * 밥약 목록을 API에서 로드하는 함수
-   */
-  const loadEvents = async () => {
+  async function loadEvents() {
     try {
-      const response = await eventAPI.getEvents({
-        search: searchTerm,
-        page: 1,
-        limit: 20,
-      })
+      setError("");
+      const raw = await eventAPI.getEvents({ search: searchTerm, page: 1, limit: 20 });
 
-      if (response.success) {
-        setEvents(response.events)
+      const list: any[] = Array.isArray((raw as any)?.events)
+        ? (raw as any).events
+        : Array.isArray(raw)
+        ? (raw as any)
+        : [];
+
+      if (list.length === 0) {
+        setEvents([buildMockEvent()]);
+      } else {
+        setEvents(list.map(mapEventFromApi));
       }
-    } catch (error) {
-      console.error("밥약 목록 로드 실패:", error)
-      setError("밥약 목록을 불러오는데 실패했습니다.")
+    } catch (e: any) {
+      console.error("밥약 목록 로드 실패:", e);
+      setError(e?.message || "밥약 목록을 불러오는데 실패했습니다.");
+      setEvents([buildMockEvent()]);
     }
   }
 
-  // 검색어 변경 시 밥약 목록 다시 로드
+  // 검색 디바운스 (훅은 항상 선언, 내부에서 가드)
   useEffect(() => {
-    if (isLoggedIn) {
-      const debounceTimer = setTimeout(() => {
-        loadEvents()
-      }, 300)
+    if (!isLoggedIn) return;
+    const t = setTimeout(() => void loadEvents(), 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTerm, isLoggedIn]);
 
-      return () => clearTimeout(debounceTimer)
-    }
-  }, [searchTerm, isLoggedIn])
+  // ✅ 훅이 아니라 단순 변수로 사용 (Hook order 문제 제거)
+  const filteredEvents = events;
 
-  // 로딩 중일 때 표시할 화면
   if (isLoading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
@@ -81,18 +146,12 @@ export default function HomePage() {
           <p className="text-muted-foreground">로딩 중...</p>
         </div>
       </div>
-    )
+    );
   }
 
-  // 로그인되지 않은 경우 아무것도 렌더링하지 않음 (리다이렉트 처리됨)
   if (!isLoggedIn) {
-    return null
+    return <></>;
   }
-
-  /**
-   * 밥약 목록 필터링 함수 - 검색어만 사용 (API에서 필터링 처리)
-   */
-  const filteredEvents = events
 
   return (
     <div className="min-h-screen bg-background">
@@ -118,16 +177,13 @@ export default function HomePage() {
 
       <section className="bg-gradient-to-br from-primary/10 to-accent/10 py-12">
         <div className="container mx-auto px-4 text-center">
-          {/* 마스코트 이미지 */}
           <div className="flex justify-center mb-6">
             <img src="/bobple-mascot.png" alt="밥플 마스코트" className="w-24 h-24 animate-bounce" />
           </div>
-          {/* 메인 제목 및 설명 */}
           <h2 className="text-3xl font-bold text-foreground mb-4">새로운 사람들과 함께하는 식사</h2>
           <p className="text-muted-foreground text-lg mb-8 max-w-2xl mx-auto">
             혼자 먹기 아쉬운 맛집, 새로운 사람들과 함께 나누어보세요. 밥플에서 특별한 식사 경험을 만들어가세요.
           </p>
-          {/* 주요 액션 버튼들 */}
           <Button size="lg" className="mr-4" onClick={() => router.push("/create")}>
             <Plus className="w-5 h-5 mr-2" />
             밥약 만들기
@@ -161,56 +217,53 @@ export default function HomePage() {
 
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {filteredEvents.map((event) => (
-            // 개별 밥약 카드
             <Card key={event.id} className="hover:shadow-lg transition-shadow cursor-pointer">
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
-                    {/* 밥약 제목 */}
                     <CardTitle className="text-lg mb-2">{event.title}</CardTitle>
-                    {/* 위치 및 시간 정보 */}
                     <div className="flex items-center space-x-4 text-sm text-muted-foreground">
                       <div className="flex items-center">
                         <MapPin className="w-4 h-4 mr-1" />
-                        {event.location}
+                        {event.location ?? "장소 미정"}
                       </div>
                       <div className="flex items-center">
                         <Clock className="w-4 h-4 mr-1" />
-                        {new Date(event.date).toLocaleDateString("ko-KR", {
-                          month: "short",
-                          day: "numeric",
-                        })}{" "}
-                        {event.startTime}-{event.endTime}
+                        {new Date(event.date).toLocaleDateString("ko-KR", { month: "short", day: "numeric" })}{" "}
+                        {event.startTime ?? "??:??"}
+                        {event.endTime ? `-${event.endTime}` : ""}
                       </div>
                     </div>
                   </div>
-                  {/* 참여 인원 정보 */}
                   <div className="flex items-center text-sm text-muted-foreground">
                     <Users className="w-4 h-4 mr-1" />
-                    {event.currentParticipants}/{event.maxParticipants}
+                    {event.currentParticipants ?? 0}/{event.maxParticipants ?? "-"}
                   </div>
                 </div>
               </CardHeader>
               <CardContent>
-                {/* 밥약 설명 */}
-                <p className="text-sm text-muted-foreground mb-4 line-clamp-2">{event.description}</p>
+                {event.description && (
+                  <p className="text-sm text-muted-foreground mb-4 line-clamp-2">{event.description}</p>
+                )}
 
-                {/* 호스트 정보 및 레스토랑 */}
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center space-x-2">
                     <Avatar className="w-6 h-6">
                       <AvatarImage src={event.host.avatar || "/placeholder.svg"} />
-                      <AvatarFallback>{event.host.name[0]}</AvatarFallback>
+                      <AvatarFallback>{event.host.name?.[0] ?? "H"}</AvatarFallback>
                     </Avatar>
                     <span className="text-sm font-medium">{event.host.name}</span>
-                    <span className="text-xs text-muted-foreground">★ {event.host.rating}</span>
+                    {event.host.rating != null && (
+                      <span className="text-xs text-muted-foreground">★ {event.host.rating}</span>
+                    )}
                   </div>
-                  <Badge variant="outline" className="text-xs">
-                    {event.restaurant}
-                  </Badge>
+                  {event.restaurant && (
+                    <Badge variant="outline" className="text-xs">
+                      {event.restaurant}
+                    </Badge>
+                  )}
                 </div>
 
-                {/* 참여하기 버튼 */}
                 <Button className="w-full" size="sm" onClick={() => router.push(`/events/${event.id}`)}>
                   참여하기
                 </Button>
@@ -219,7 +272,6 @@ export default function HomePage() {
           ))}
         </div>
 
-        {/* 검색 결과 없음 메시지 */}
         {filteredEvents.length === 0 && !error && (
           <div className="text-center py-12">
             <img src="/bobple-mascot.png" alt="밥플 마스코트" className="w-16 h-16 mx-auto mb-4 opacity-50" />
@@ -235,5 +287,5 @@ export default function HomePage() {
         </Button>
       </div>
     </div>
-  )
+  );
 }
