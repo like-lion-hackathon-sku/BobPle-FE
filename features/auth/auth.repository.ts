@@ -1,56 +1,62 @@
 import { apiFetch } from '@/shared/api/client';
+import { authAPI, type Profile } from "@/lib/api";
 
-/**
- * 로그인
- * @param {{ idToken: string }} payload - 구글 등 외부 인증 토큰
- * @returns {{ ok: boolean }}
- */
+/** Login */
 export function postLogin(payload: { idToken: string }) {
-  return apiFetch<{ ok: boolean }>('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return apiFetch<{ ok: boolean; token?: string; user?: any; isCompleted?: boolean }>(
+    '/api/auth/login',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
 }
 
-/** 로그아웃 */
+
+/** Logout */
 export async function postLogout() {
-  return apiFetch('/api/auth/logout', { method: 'POST' }); // body 넣지 말기
+  return apiFetch('/api/auth/logout', { method: 'POST' }); // body 없음
 }
 
-/** 내 프로필 조회 */
-export async function getMyProfile(): Promise<UserProfile | null> {
-  try {
-    return await apiFetch<UserProfile>('/api/auth/profile', { method: 'GET' });
-  } catch (e: any) {
-    if (String(e?.message).includes('HTTP 404')) return null; // 엔드포인트 없거나 프로필 미생성
-    throw e;
-  }
-}
-/*export async function getMyProfile() {
-  try {
-    return await apiFetch<UserProfile>('/api/auth/profile');
-  } catch (e: any) {
-    if (String(e.message).includes('404')) return null; // 404면 임시 null
-    throw e;
-  }
-}*/
-
-/** 내 프로필 수정 */
-export function putMyProfile(payload: Partial<UserProfile>) {
-  return apiFetch<UserProfile>('/api/auth/profile', {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  });
-}
-
+/** 타입 */
 export type UserProfile = {
   id: number;
   email: string;
+  grade: number | null;
+  gender: "M" | "F" | "N" | null;
   nickname: string | null;
-  grade?: number | null;
-  gender?: 'M' | 'F' | 'N' | null;
-  profile_img?: string | null;
-  isCompleted?: boolean;
-  created_at?: string;
-  updated_at?: string;
+  isCompleted?: boolean;     // ← camelCase로
+  is_completed?: boolean;    // ← snake_case도 대응
 };
+
+/** helpers: UI → 서버 스키마 매핑 */
+const toWireGender = (g: any): 'M' | 'F' | 'N' | undefined => {
+  if (g === '남성' || g === 'M') return 'M';
+  if (g === '여성' || g === 'F') return 'F';
+  if (g === '상관없음' || g === '무관' || g === 'N') return 'N';
+  return undefined;
+};
+const toWireGrade = (v: any): number | undefined => {
+  if (v == null) return undefined;
+  const n = typeof v === 'number' ? v : parseInt(String(v).replace(/\D/g, ''), 10);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+/** 내 프로필 조회: refresh → users/{id} */
+// 저장(수정)
+/** 내 프로필 조회(에러 → null로 흡수) */
+export async function getMyProfile(): Promise<Profile | null> {
+  const me = await authAPI.getProfile().catch(() => null);
+  return me;
+}
+
+/** 초기 프로필 저장 */
+export async function putMyProfile(payload: {
+  grade: number;
+  gender: "Male" | "Female" | "None";
+  nickname: string;
+}) {
+  return authAPI.updateProfile(payload);
+}
+const authRepository = { getMyProfile, putMyProfile };
+export default authRepository;
