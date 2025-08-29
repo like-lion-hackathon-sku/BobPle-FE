@@ -13,6 +13,9 @@ import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from 
 import { MapPin, Clock, Users, Trash2 } from "lucide-react";
 import { eventAPI, apiRequest } from "@/lib/api";
 
+/* ===== 상수 ===== */
+const DEFAULT_MAX = 4;
+
 /* ===== 타입 ===== */
 type Participant = { id?: number | string; nickname?: string; name?: string; avatar?: string | null };
 type CommentItem = {
@@ -134,11 +137,42 @@ export default function EventDetailPage() {
         const startHHMM = toHHMM(row.startISO);
         const endHHMM = toHHMM(row.endISO);
 
+        // 장소/주소 보강
         let location: string | null = row.restaurantAddress ?? row.restaurantName ?? null;
         if (!location && row.restaurantId) {
           const r = await fetchRestaurantById(Number(row.restaurantId));
           location = r.address ?? r.name ?? `식당 #${row.restaurantId}`;
         }
+
+        // 참가자 목록 매핑
+        const participants: Participant[] = Array.isArray(row.participants)
+          ? row.participants.map((p: any) => ({
+              id: p.id,
+              nickname: p.nickname,
+              name: p.nickname,
+              avatar: p.avatar ?? null,
+            }))
+          : [];
+
+        // 호스트 객체
+        const host = {
+          id: row.creatorId ?? undefined,
+          name: row.creatorNickname ?? "호스트",
+          avatar: null,
+        };
+
+        // 호스트를 참가자에 합치기(중복 방지)
+        const hasHost =
+          host.id != null &&
+          participants.some((p) => String(p.id ?? "") === String(host.id ?? ""));
+        const mergedParticipants = hasHost
+          ? participants
+          : [{ id: host.id, name: host.name, avatar: host.avatar }, ...participants];
+
+        // 표시용 현재 인원(서버 값이 있으면 사용, 없으면 merged 길이, 최소 1)
+        const displayCount =
+          row.participantsCount ??
+          Math.max(1, mergedParticipants.length);
 
         const mapped: EventDetail = {
           id: row.id,
@@ -150,17 +184,10 @@ export default function EventDetailPage() {
           startHHMM,
           endHHMM,
           location,
-          currentParticipants: row.participantsCount ?? null,
-          maxParticipants: row.maxParticipants ?? null,
-          host: { id: row.creatorId ?? undefined, name: row.creatorNickname ?? "호스트", avatar: null },
-          participants: Array.isArray(row.participants)
-            ? row.participants.map((p: any) => ({
-                id: p.id,
-                nickname: p.nickname,
-                name: p.nickname,
-                avatar: p.avatar ?? null,
-              }))
-            : [],
+          currentParticipants: displayCount,
+          maxParticipants: row.maxParticipants ?? DEFAULT_MAX,
+          host,
+          participants: mergedParticipants,
         };
 
         setDetail(mapped);
@@ -177,6 +204,7 @@ export default function EventDetailPage() {
 
   const dateLabel = useMemo(() => toDateLabel(detail.startISO), [detail.startISO]);
 
+  // ===== 댓글 목록 =====
   async function reloadComments(idForComments: string) {
     try {
       const r: any = await apiRequest(`/api/events/${encodeURIComponent(idForComments)}/comments`);
@@ -199,25 +227,39 @@ export default function EventDetailPage() {
     }
   }
 
+  // ===== 댓글 작성 (최종본) =====
   async function createComment() {
     if (!newComment.trim() || !detail.id) return;
     setPosting(true);
     try {
-      const r: any = await apiRequest(`/api/events/${encodeURIComponent(String(detail.id))}/comments`, {
-        method: "POST",
-        body: JSON.stringify({ content: newComment.trim() }),
-      });
       const me =
-        typeof window !== "undefined" ? JSON.parse(localStorage.getItem("user") || "null") : null;
-      setComments((prev) => [
-        {
-          id: r?.id ?? Date.now(),
-          user: { id: me?.id, name: me?.nickname ?? me?.name ?? "나", avatar: me?.avatar ?? null },
+        typeof window !== "undefined"
+          ? JSON.parse(localStorage.getItem("user") || "null")
+          : null;
+
+      const creatorId = Number(me?.id);
+      const eventNumericId = Number(detail.id);
+
+      if (!Number.isFinite(creatorId)) {
+        throw new Error("로그인 사용자 ID(creator_id)를 찾을 수 없습니다.");
+      }
+      if (!Number.isFinite(eventNumericId)) {
+        throw new Error("이벤트 ID(event_id)가 유효하지 않습니다.");
+      }
+
+      // ERD에 맞춰 snake_case 필드로 전송
+      await apiRequest(`/api/events/${encodeURIComponent(String(detail.id))}/comments`, {
+        method: "POST",
+        body: JSON.stringify({
           content: newComment.trim(),
-          createdAt: new Date().toISOString(),
-        },
-        ...prev,
-      ]);
+          creatorId: creatorId,
+          eventId: eventNumericId,
+        }),
+        headers: {
+          "Content-Type": "application/json",
+        } as any,
+      });
+
       setNewComment("");
       await reloadComments(String(detail.id));
     } catch (e) {
@@ -227,6 +269,7 @@ export default function EventDetailPage() {
     }
   }
 
+  // ===== 댓글 삭제 =====
   async function deleteComment(commentId: number | string) {
     if (!detail.id) return;
     setDeletingId(commentId);
@@ -279,7 +322,7 @@ export default function EventDetailPage() {
               </div>
               <div className="flex items-center text-sm text-muted-foreground">
                 <Users className="w-4 h-4 mr-1" />
-                {detail.currentParticipants ?? 0}/{detail.maxParticipants ?? "-"}
+                {detail.currentParticipants ?? 1}/{detail.maxParticipants ?? DEFAULT_MAX}
               </div>
             </div>
           </CardHeader>
@@ -325,7 +368,6 @@ export default function EventDetailPage() {
                     className="flex-1 h-10"
                     onClick={() => {
                       setShowApplyDialog(false);
-                      // ⚠️ 채팅 라우트 경로에 맞게 수정 가능: /chat vs /chats
                       router.push(`/chat/${detail.id}`);
                     }}
                   >
