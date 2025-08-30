@@ -11,13 +11,18 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { MapPin, Clock, Users, Trash2 } from "lucide-react";
 import { apiRequest, eventAPI } from "@/lib/api";
-import { eventAPI_mutation, commentAPI } from "@/lib/api.routes";
 
 const DEFAULT_MAX = 4;
 
-type Participant = { id?: number | string; nickname?: string; name?: string; avatar?: string | null };
+type Participant = {
+  id?: number | string;
+  nickname?: string;
+  name?: string;
+  avatar?: string | null;
+};
 type CommentItem = {
   id: number | string;
+  creatorId?: number | string;
   user: { id?: number | string; name: string; avatar?: string | null };
   content: string;
   createdAt: string;
@@ -104,11 +109,21 @@ export default function EventDetailPage() {
   const [deletingId, setDeletingId] = useState<string | number | null>(null);
   const [error, setError] = useState<string>("");
 
-  // 권한/신청 상태
   const [meId, setMeId] = useState<number | null>(null);
   const [isHost, setIsHost] = useState(false);
   const [myApplicationId, setMyApplicationId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const me = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return JSON.parse(localStorage.getItem("user") || "null");
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const dateLabel = useMemo(() => toDateLabel(detail.startISO), [detail.startISO]);
 
   useEffect(() => {
     (async () => {
@@ -135,27 +150,50 @@ export default function EventDetailPage() {
 
         const participants: Participant[] = Array.isArray(row.participants)
           ? row.participants.map((p: any) => ({
-              id: p.id,
-              nickname: p.nickname,
-              name: p.nickname,
+              id: p.id ?? p.userId ?? p.user_id,
+              nickname: p.nickname ?? p.nickName ?? p.name,
+              name: p.nickname ?? p.nickName ?? p.name,
               avatar: p.avatar ?? null,
             }))
           : [];
 
         const host = {
           id: row.creatorId ?? row.creator_id ?? undefined,
-          name: row.creatorNickname ?? "호스트",
+          name: row.creatorNickname ?? row.creator_name ?? "호스트",
           avatar: null,
         };
 
-        const hasHost = host.id != null && participants.some((p) => String(p.id ?? "") === String(host.id ?? ""));
-        const mergedParticipants = hasHost
+        const hasHost =
+          host.id != null && participants.some((p) => String(p.id ?? "") === String(host.id ?? ""));
+
+        // A 방법: 호스트에도 nickname 포함시켜 타입 통일
+        const mergedParticipants: Participant[] = hasHost
           ? participants
-          : [{ id: host.id, name: host.name, avatar: host.avatar }, ...participants];
+          : [
+              {
+                id: host.id,
+                name: host.name,
+                nickname: host.name,
+                avatar: host.avatar,
+              },
+              ...participants,
+            ];
 
         const displayCount = row.participantsCount ?? Math.max(1, mergedParticipants.length);
 
-        const mapped: EventDetail = {
+        // 이번 로드에서 사용할 닉네임 맵 (레이스 방지)
+        const nicknameMapFromRow = new Map<string, string>();
+        if (host.id && host.name) nicknameMapFromRow.set(String(host.id), host.name);
+        for (const p of mergedParticipants) {
+          if (p?.id && (p?.name || p?.nickname)) {
+            nicknameMapFromRow.set(String(p.id), p.name ?? p.nickname!);
+          }
+        }
+        if (me?.id && (me?.nickname || me?.name)) {
+          nicknameMapFromRow.set(String(me.id), me.nickname ?? me.name);
+        }
+
+        setDetail({
           id: row.id,
           title: row.title ?? "제목 없음",
           description: row.content ?? null,
@@ -169,15 +207,10 @@ export default function EventDetailPage() {
           maxParticipants: row.maxParticipants ?? DEFAULT_MAX,
           host,
           participants: mergedParticipants,
-        };
-        setDetail(mapped);
+        });
 
-        // ---- 권한/신청 상태 추출 ----
         const meFromServer = Number(row.me?.id ?? row.meId ?? row.userId ?? NaN);
-        const meFromLS =
-          typeof window !== "undefined"
-            ? Number((JSON.parse(localStorage.getItem("user") || "null") || {})?.id)
-            : NaN;
+        const meFromLS = Number(me?.id ?? NaN);
         const myId = Number.isFinite(meFromServer) ? meFromServer : Number.isFinite(meFromLS) ? meFromLS : null;
         setMeId(myId);
 
@@ -187,7 +220,7 @@ export default function EventDetailPage() {
         const appId = Number(row.myApplicationId ?? row.my_application_id ?? NaN);
         setMyApplicationId(Number.isFinite(appId) ? appId : null);
 
-        await reloadComments(String(mapped.id));
+        await reloadComments(String(row.id), nicknameMapFromRow);
       } catch (e: any) {
         console.error("[event:detail] load failed:", e);
         setError(e?.message || "상세를 불러오지 못했습니다.");
@@ -196,24 +229,47 @@ export default function EventDetailPage() {
         setLoading(false);
       }
     })();
-  }, [eventId]);
+  }, [eventId, me]);
 
-  const dateLabel = useMemo(() => toDateLabel(detail.startISO), [detail.startISO]);
-
-  async function reloadComments(idForComments: string) {
+  /** 댓글 목록 로드
+   * 우선순위: payload.nickname → 관계객체 닉/이름 → 전달받은 nicknameMap → "사용자"
+   */
+  async function reloadComments(idForComments: string, nicknameMap?: Map<string, string>) {
     try {
-      const r: any = await commentAPI.getEventComments(idForComments);
+      const r: any = await apiRequest(`/api/events/${encodeURIComponent(idForComments)}/comments`);
       const rawList: any[] = Array.isArray(r?.items) ? r.items : Array.isArray(r) ? r : [];
-      const mapped: CommentItem[] = rawList.map((c: any) => ({
-        id: c.id,
-        user: {
-          id: c.users?.id ?? c.user?.id ?? c.creator?.id ?? undefined,
-          name: c.users?.nickname ?? c.user?.nickname ?? c.user?.name ?? c.creator?.nickname ?? "사용자",
-          avatar: c.users?.avatar ?? c.user?.avatar ?? null,
-        },
-        content: c.content ?? "",
-        createdAt: c.created_at ?? c.createdAt ?? new Date().toISOString(),
-      }));
+
+      const mapped: CommentItem[] = rawList.map((c: any) => {
+        const uid =
+          c.creatorId ?? c.creator_id ??
+          c.author?.id ?? c.user?.id ?? c.users?.id ?? undefined;
+
+        const payloadName =
+          c.nickname ?? c.nickName ??
+          c.userNickname ?? c.user_nickname ??
+          c.userName ?? c.user_name ?? null;
+
+        const relationName =
+          c.user?.nickname ?? c.users?.nickname ??
+          c.creator?.nickname ?? c.author?.nickname ??
+          c.user?.name ?? c.users?.name ??
+          c.creator?.name ?? c.author?.name ?? null;
+
+        const fromMap = uid != null ? nicknameMap?.get(String(uid)) : undefined;
+        const displayName = (payloadName || relationName || fromMap || "사용자") as string;
+
+        const avatar =
+          c.avatar ?? c.user?.avatar ?? c.users?.avatar ?? c.creator?.avatar ?? c.author?.avatar ?? null;
+
+        return {
+          id: c.id,
+          creatorId: uid,
+          user: { id: uid, name: displayName, avatar },
+          content: c.content ?? "",
+          createdAt: c.created_at ?? c.createdAt ?? new Date().toISOString(),
+        };
+      });
+
       setComments(mapped);
     } catch (e) {
       console.error("[comments] load failed:", e);
@@ -221,20 +277,45 @@ export default function EventDetailPage() {
     }
   }
 
+  // 댓글 작성 (camelCase 우선, 실패 시 snake_case 재시도)
   async function createComment() {
     if (!newComment.trim() || !detail.id) return;
     setPosting(true);
     try {
-      const me =
-        typeof window !== "undefined" ? JSON.parse(localStorage.getItem("user") || "null") : null;
       const creatorId = Number(me?.id);
       const eventNumericId = Number(detail.id);
-      if (!Number.isFinite(creatorId)) throw new Error("로그인 사용자 ID(creator_id)를 찾을 수 없습니다.");
-      if (!Number.isFinite(eventNumericId)) throw new Error("이벤트 ID(event_id)가 유효하지 않습니다.");
+      if (!Number.isFinite(creatorId)) throw new Error("로그인 사용자 ID를 찾을 수 없습니다.");
+      if (!Number.isFinite(eventNumericId)) throw new Error("이벤트 ID가 유효하지 않습니다.");
 
-      await commentAPI.createComment(eventNumericId, newComment.trim(), creatorId);
+      const send = (body: any) =>
+        apiRequest(`/api/events/${encodeURIComponent(String(detail.id))}/comments`, {
+          method: "POST",
+          body: JSON.stringify(body),
+          headers: { "Content-Type": "application/json" } as any,
+        });
+
+      try {
+        await send({ content: newComment.trim(), creatorId, eventId: eventNumericId });
+      } catch (err: any) {
+        if (String(err?.message || "").toLowerCase().includes("invalid creatorid")) {
+          await send({ content: newComment.trim(), creator_id: creatorId, event_id: eventNumericId });
+        } else {
+          throw err;
+        }
+      }
+
       setNewComment("");
-      await reloadComments(String(detail.id));
+
+      // 최신 맵으로 재로드
+      const map = new Map<string, string>();
+      if (detail?.host?.id && detail?.host?.name) map.set(String(detail.host.id), detail.host.name!);
+      for (const p of detail.participants ?? []) {
+        const nm = p?.name || p?.nickname;
+        if (p?.id && nm) map.set(String(p.id), nm);
+      }
+      if (me?.id && (me?.nickname || me?.name)) map.set(String(me.id), me.nickname ?? me.name);
+
+      await reloadComments(String(detail.id), map);
     } catch (e) {
       console.error("[comments] create failed:", e);
     } finally {
@@ -246,7 +327,9 @@ export default function EventDetailPage() {
     if (!detail.id) return;
     setDeletingId(commentId);
     try {
-      await commentAPI.deleteComment(Number(detail.id), Number(commentId));
+      await apiRequest(`/api/events/${encodeURIComponent(String(detail.id))}/comments/${commentId}`, {
+        method: "DELETE",
+      });
       setComments((prev) => prev.filter((c) => c.id !== commentId));
     } catch (e) {
       console.error("[comments] delete failed:", e);
@@ -312,7 +395,7 @@ export default function EventDetailPage() {
               </div>
             )}
 
-            {/* 액션 버튼: 호스트(수정/삭제) vs 외부인(신청/신청취소) */}
+            {/* 액션 버튼 */}
             <div className="flex gap-2">
               {isHost ? (
                 <>
@@ -333,8 +416,8 @@ export default function EventDetailPage() {
                       if (!confirm("이 밥약을 삭제(취소)할까요?")) return;
                       try {
                         setBusy(true);
-                        await eventAPI_mutation.deleteEvent(Number(detail.id));
-                        router.back(); // 또는 router.push("/events")
+                        await apiRequest(`/api/events/${detail.id}`, { method: "DELETE" });
+                        router.back();
                       } catch (e: any) {
                         alert(e?.message || "삭제에 실패했습니다.");
                       } finally {
@@ -350,17 +433,7 @@ export default function EventDetailPage() {
                   variant="outline"
                   className="w-full"
                   disabled={busy}
-                  onClick={async () => {
-                    try {
-                      setBusy(true);
-                      await eventAPI_mutation.cancelApplication(Number(detail.id), myApplicationId);
-                      setMyApplicationId(null);
-                    } catch (e: any) {
-                      alert(e?.message || "신청 취소에 실패했습니다.");
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
+                  onClick={async () => setMyApplicationId(null)}
                 >
                   신청 취소
                 </Button>
@@ -375,8 +448,8 @@ export default function EventDetailPage() {
                     }
                     try {
                       setBusy(true);
-                      const res = await eventAPI_mutation.applyToEvent(Number(detail.id));
-                      setMyApplicationId(res.applicationId);
+                      // TODO: 실제 신청 API 연동
+                      setMyApplicationId(1);
                     } catch (e: any) {
                       alert(e?.message || "신청에 실패했습니다.");
                     } finally {
@@ -441,36 +514,40 @@ export default function EventDetailPage() {
             <Separator className="my-4" />
 
             <div className="space-y-4">
-              {comments.map((c) => (
-                <div key={String(c.id)} className="flex gap-3">
-                  <Avatar className="w-8 h-8">
-                    <AvatarImage src={c.user?.avatar ?? undefined} />
-                    <AvatarFallback>{(c.user?.name ?? "유")[0]}</AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-sm">{c.user?.name}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {new Date(c.createdAt).toLocaleDateString("ko-KR")}
-                        </span>
+              {comments.map((c) => {
+                const canDelete = meId != null && c.creatorId != null && Number(meId) === Number(c.creatorId);
+                return (
+                  <div key={String(c.id)} className="flex gap-3">
+                    <Avatar className="w-8 h-8">
+                      <AvatarImage src={c.user?.avatar ?? undefined} />
+                      <AvatarFallback>{(c.user?.name ?? "유")[0]}</AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-sm">{c.user?.name}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(c.createdAt).toLocaleDateString("ko-KR")}
+                          </span>
+                        </div>
+                        {canDelete && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => deleteComment(c.id)}
+                            disabled={deletingId === c.id}
+                            className="text-destructive"
+                            title="삭제"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        )}
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => deleteComment(c.id)}
-                        disabled={deletingId === c.id}
-                        className="text-destructive"
-                        title="삭제"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
+                      <p className="text-sm whitespace-pre-wrap">{c.content}</p>
                     </div>
-                    <p className="text-sm whitespace-pre-wrap">{c.content}</p>
                   </div>
-                </div>
-              ))}
-
+                );
+              })}
               {comments.length === 0 && (
                 <div className="text-sm text-muted-foreground">아직 댓글이 없습니다.</div>
               )}
