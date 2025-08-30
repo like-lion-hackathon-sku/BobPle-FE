@@ -1,4 +1,3 @@
-// app/restaurants/[restaurantId]/page.tsx
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";

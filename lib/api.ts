@@ -4,16 +4,14 @@
  * - 외부 사용처는 계속 "@/lib/api" 에서 import
  */
 import { apiRequest, refreshPOST, getAuthToken, API_BASE_URL } from "./api.core";
-export { apiRequest, refreshPOST, getAuthToken, API_BASE_URL }; // 밖으로도 다시 내보내기
+export { apiRequest, refreshPOST, getAuthToken, API_BASE_URL };
 export type { Profile } from "./api.core";
+
 import { eventAPI_mutation } from "./api.routes";
-const BASE =
-  process.env.NEXT_PUBLIC_API_URL // ✅ .env.local에 있는 키로 맞춤
-  ?? (process.env.PROXY_MODE === "true" ? (process.env.PROXY_PREFIX || "/_be") : "");
-// ─────────────────────────────────────────────────────────────
-// 보조 유틸(도메인 변환)
-// ─────────────────────────────────────────────────────────────
-/** UI 라벨 → 서버 포맷 */
+
+/* ─────────────────────────────────────────────────────────────
+   보조 유틸
+───────────────────────────────────────────────────────────── */
 const toWireGender = (g: any): "Male" | "Female" | "None" | undefined => {
   if (g === "남성" || g === "M") return "Male";
   if (g === "여성" || g === "F") return "Female";
@@ -26,7 +24,6 @@ const toWireGrade = (v: any): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-/** 보조: 현재 로그인 유저 로컬 */
 export function getCurrentUser(): any | null {
   if (typeof window === "undefined") return null;
   const s = localStorage.getItem("user");
@@ -37,9 +34,9 @@ export function isAuthenticated(): boolean {
   return !!getAuthToken();
 }
 
-// ─────────────────────────────────────────────────────────────
-// 인증
-// ─────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────
+   인증
+───────────────────────────────────────────────────────────── */
 export const authAPI = {
   login: async (email: string, password: string) => {
     const response = await apiRequest("/api/auth/login", {
@@ -55,7 +52,6 @@ export const authAPI = {
     return response;
   },
 
-  /** Google OAuth */
   loginWithIdToken: async (idToken: string) => {
     const response = await apiRequest("/api/auth/login", {
       method: "POST",
@@ -87,12 +83,10 @@ export const authAPI = {
     }
   },
 
-  /** 내 프로필 조회: refresh(POST)로만 회수 */
   getProfile: async () => {
     try {
       const refreshed = await refreshPOST();
       const me = refreshed?.user ?? refreshed ?? null;
-
       if (me?.id) {
         localStorage.setItem("user", JSON.stringify(me));
         localStorage.setItem("isLoggedIn", "true");
@@ -103,7 +97,6 @@ export const authAPI = {
     }
   },
 
-  /** 초기 프로필 설정 */
   updateProfile: async (profileData: { grade: any; gender: any; nickname: string }) => {
     const grade = toWireGrade(profileData.grade);
     const gender = toWireGender(profileData.gender);
@@ -119,137 +112,108 @@ export const authAPI = {
   },
 };
 
-// ─────────────────────────────────────────────────────────────
-// 사용자
-// ─────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────
+   사용자
+───────────────────────────────────────────────────────────── */
 export const userAPI = {
   getUserProfile: async (userId: number) => apiRequest(`/api/users/${userId}`),
 };
 
-// ─────────────────────────────────────────────────────────────
-// 이벤트
-// ─────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────
+   이벤트 (읽기/생성 등)
+───────────────────────────────────────────────────────────── */
 export const eventAPI_read = {
+  // 🔧 fetch(BASE...) → apiRequest 로 교체 (프록시/에러 파싱 통일)
   createEvent: async (eventData: any) => {
-    const url = `${BASE}/api/events/creation`;      // ← 절대 URL 사용
-    const payload = JSON.stringify(eventData);
-
-    console.log("[DEBUG][createEvent] 요청 URL:", url);
-    console.log("[DEBUG][createEvent] 요청 바디:", eventData);
-
-    const res = await fetch(url, {
+    const data = await apiRequest("/api/events/creation", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${localStorage.getItem("accessToken") || ""}`,
-      },
-      body: payload,
-      credentials: "include",
+      body: JSON.stringify(eventData),
+      headers: { "Content-Type": "application/json" } as any,
     });
-
-    const text = await res.text();
-    let data: any = text;
-    try { data = JSON.parse(text); } catch {}
-
-    console.log("[DEBUG][createEvent] 응답 상태:", res.status, res.statusText);
-    console.log("[DEBUG][createEvent] 응답 본문:", data);
-
-    if (!res.ok) {
-  // JSON이면 reason/message, 문자열이면 그대로
-  const msg =
-    typeof data === "string"
-      ? data
-      : data?.reason || data?.message || data?.error || "요청 실패";
-  throw new Error(`요청 실패 (HTTP ${res.status}) ${msg}`);
-}
     return data;
   },
 
   getEvents: async (params?: { search?: string; page?: number; size?: number }) => {
-  const sp = new URLSearchParams();
-  if (params) Object.entries(params).forEach(([k, v]) => {
-    if (v !== undefined && v !== "") sp.append(k, String(v));
-  });
-  const q = sp.toString();
+    const sp = new URLSearchParams();
+    if (params) Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== "") sp.append(k, String(v));
+    });
+    const q = sp.toString();
 
-  const raw = await apiRequest(`/api/events${q ? `?${q}` : ""}`);
+    const raw = await apiRequest(`/api/events${q ? `?${q}` : ""}`);
 
-  // ✅ 백엔드가 { ok, data: { items, pagination } } 형태일 때도 처리
-  const data = (raw && typeof raw === "object" && "data" in raw) ? (raw as any).data : raw;
+    const data = (raw && typeof raw === "object" && "data" in raw) ? (raw as any).data : raw;
 
-  const items =
-    Array.isArray(data?.items)  ? data.items  :
-    Array.isArray(data?.events) ? data.events :
-    Array.isArray(data)         ? data       : [];
+    const items =
+      Array.isArray(data?.items)  ? data.items  :
+      Array.isArray(data?.events) ? data.events :
+      Array.isArray(data)         ? data       : [];
 
-  const page  = data?.pagination?.page  ?? data?.page  ?? params?.page  ?? 1;
-  const size  = data?.pagination?.size  ?? data?.size  ?? params?.size  ?? items.length;
-  const total = data?.pagination?.total ?? data?.total ?? items.length;
+    const page  = data?.pagination?.page  ?? data?.page  ?? params?.page  ?? 1;
+    const size  = data?.pagination?.size  ?? data?.size  ?? params?.size  ?? items.length;
+    const total = data?.pagination?.total ?? data?.total ?? items.length;
 
-  return { items, page, size, total };
-},
+    return { items, page, size, total };
+  },
 
   getEvent: async (eventId: number | string) => {
-  const eid = String(eventId ?? "").trim();
-  if (!eid) return null;
+    const eid = String(eventId ?? "").trim();
+    if (!eid) return null;
 
-  const res = await apiRequest(`/api/events/${encodeURIComponent(eid)}`);
+    const res = await apiRequest(`/api/events/${encodeURIComponent(eid)}`);
 
-  // ✅ 다양한 래핑(data/item)과 납작/중첩 응답 모두 수용
-  const raw = res?.data?.item ?? res?.data ?? res?.item ?? res;
+    const raw = res?.data?.item ?? res?.data ?? res?.item ?? res;
 
-  // 안전 픽커
-  const pick = (obj: any, ...keys: string[]) => {
-    for (const k of keys) if (obj?.[k] !== undefined) return obj[k];
-    return null;
-  };
+    const pick = (obj: any, ...keys: string[]) => {
+      for (const k of keys) if (obj?.[k] !== undefined) return obj[k];
+      return null;
+    };
 
-  // 시간
-  const startISO = pick(raw, "startAt", "start_at");
-  const endISO   = pick(raw, "endAt", "end_at");
+    const startISO = pick(raw, "startAt", "start_at");
+    const endISO   = pick(raw, "endAt", "end_at");
 
-  // 작성자
-  const creator = raw?.creator ?? raw?.user ?? null;
-  const creatorId = pick(creator ?? raw, "id", "creatorId", "userId");
-  const creatorNickname =
-    pick(creator ?? raw, "nickname", "name", "creatorNickname") ?? null;
+    const creator = raw?.creator ?? raw?.user ?? null;
+    const creatorId = pick(creator ?? raw, "id", "creatorId", "userId");
+    const creatorNickname =
+      pick(creator ?? raw, "nickname", "name", "creatorNickname") ?? null;
 
-  // 식당
-  const restaurant = raw?.restaurant ?? null;
-  const restaurantId =
-    pick(restaurant ?? raw, "id", "restaurantId", "restaurant_id");
-  const restaurantName =
-    pick(restaurant ?? raw, "name", "restaurantName") ?? null;
-  const restaurantAddress =
-    pick(restaurant ?? raw, "address", "roadAddress", "restaurantAddress") ?? null;
+    const restaurant = raw?.restaurant ?? null;
+    const restaurantId =
+      pick(restaurant ?? raw, "id", "restaurantId", "restaurant_id");
+    const restaurantName =
+      pick(restaurant ?? raw, "name", "restaurantName") ?? null;
+    const restaurantAddress =
+      pick(restaurant ?? raw, "address", "roadAddress", "restaurantAddress") ?? null;
 
-  // 참가자
-  const participants =
-    Array.isArray(raw?.participants) ? raw.participants : [];
-  const participantsCount =
-    pick(raw, "participantsCount", "participants_count") ??
-    (Array.isArray(participants) ? participants.length : 0);
+    const participants =
+      Array.isArray(raw?.participants) ? raw.participants : [];
+    const participantsCount =
+      pick(raw, "participantsCount", "participants_count") ??
+      (Array.isArray(participants) ? participants.length : 0);
 
-  const maxParticipants = pick(raw, "maxParticipants", "max_participants");
+    const maxParticipants = pick(raw, "maxParticipants", "max_participants");
 
-  return {
-    id: raw?.id ?? eid,
-    title: raw?.title ?? "제목 없음",
-    content: raw?.content ?? raw?.description ?? "",
-    startISO,
-    endISO,
-    restaurantId,
-    restaurantName,
-    restaurantAddress,
-    creatorId,
-    creatorNickname,
-    participants,
-    participantsCount,
-    maxParticipants,
-  };
-},
-  
+    return {
+      id: raw?.id ?? eid,
+      title: raw?.title ?? "제목 없음",
+      content: raw?.content ?? raw?.description ?? "",
+      startISO,
+      endISO,
+      restaurantId,
+      restaurantName,
+      restaurantAddress,
+      creatorId,
+      creatorNickname,
+      participants,
+      participantsCount,
+      maxParticipants,
+    };
+  },
 };
+
+/* ─────────────────────────────────────────────────────────────
+   웹소켓
+───────────────────────────────────────────────────────────── */
 export function openChatSocket(
   chatId: number,
   opts?: {
@@ -277,20 +241,22 @@ export function openChatSocket(
   ws.addEventListener("error", (ev) => opts?.onError?.(ev));
   return ws;
 }
-// ─────────────────────────────────────────────────────────────
-// 채팅
-// ─────────────────────────────────────────────────────────────
+
+/* ─────────────────────────────────────────────────────────────
+   채팅
+───────────────────────────────────────────────────────────── */
 export const chatAPI = {
   getChatRoom: async (chatId: number) => apiRequest(`/api/chats/${chatId}`),
   sendMessage: async (chatId: number, content: string) =>
     apiRequest(`/api/chats/${chatId}`, { method: "POST", body: JSON.stringify({ content }) }),
   leaveChat: async (chatId: number) => apiRequest(`/api/chats/${chatId}`, { method: "PATCH" }),
 };
+
 export const eventAPI = { ...eventAPI_mutation, ...eventAPI_read };
 
-// ─────────────────────────────────────────────────────────────
-// 알림
-// ─────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────
+   알림
+───────────────────────────────────────────────────────────── */
 export const notificationAPI = {
   getNotifications: async (params?: { unreadOnly?: boolean; type?: string; page?: number; size?: number }) => {
     const sp = new URLSearchParams();
@@ -310,11 +276,9 @@ export const notificationAPI = {
   }) => apiRequest("/api/notification", { method: "POST", body: JSON.stringify(notificationData) }),
 };
 
-
-
-// ─────────────────────────────────────────────────────────────
-// 추천 식당
-// ─────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────
+   추천 식당
+───────────────────────────────────────────────────────────── */
 export const restaurantAPI = {
   search: async (params?: {
     q?: string; location?: string; category?: string; sponsoredOnly?: 0 | 1; page?: number; size?: number;
@@ -328,6 +292,7 @@ export const restaurantAPI = {
     const qs = sp.toString();
     return apiRequest(`/api/restaurants${qs ? `?${qs}` : ""}`);
   },
+
   getRecommendations: async (params?: { category?: string; location?: string; priceRange?: string; size?: number }) => {
     const sp = new URLSearchParams();
     if (params) Object.entries(params).forEach(([k, v]) => {
@@ -336,29 +301,17 @@ export const restaurantAPI = {
     const qs = sp.toString();
     return apiRequest(`/api/restaurants/recommends${qs ? `?${qs}` : ""}`);
   },
+
+  // 🔧 fetch('/api/...') → apiRequest 로 교체 (프록시 + 응답 래핑 일관)
   async getById(id: number) {
-    const res = await fetch(`/api/restaurants/${id}`, {
-      method: "GET",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-    });
-
-    const text = await res.text();
-    let data: any = text;
-    try { data = JSON.parse(text); } catch {}
-
-    if (!res.ok) {
-      throw new Error(
-        `식당 조회 실패 (HTTP ${res.status}) ${typeof data === "string" ? data : data?.message || ""}`
-      );
-    }
-
-    // 백엔드 응답이 { ok, data: { id, name, ... } } 또는 { id, name }일 수 있으니 안전하게 파싱
-    const body = (data && typeof data === "object" && "data" in data) ? data.data : data;
+    const res = await apiRequest(`/api/restaurants/${id}`);
+    const body = (res && typeof res === "object" && "data" in res) ? (res as any).data : res;
     return {
       id: Number(body?.id ?? id),
       name: String(body?.name ?? body?.restaurantName ?? ""),
+      address: (body?.address ?? body?.roadAddress ?? null) as string | null,
     };
   },
 };
-export { /*chatAPI,  notificationAPI,*/ commentAPI,reviewAPI } from "./api.routes";
+
+export { /*chatAPI,  notificationAPI,*/ commentAPI, reviewAPI } from "./api.routes";

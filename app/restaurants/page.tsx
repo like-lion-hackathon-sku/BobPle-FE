@@ -1,7 +1,8 @@
+// app/restaurants/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -38,6 +39,7 @@ const serverToKoCat = (c?: string) => {
 
 export default function RestaurantsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams(); // ✅ 쿼리 유지용
 
   const [serverList, setServerList] = useState<Restaurant[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,7 +51,7 @@ export default function RestaurantsPage() {
   const categories = ["전체", "한식", "일식", "중식", "양식"];
 
   const [page, setPage] = useState(1);
-  const limit = 5; // BE 페이징 5개 고정
+  const limit = 5;
   const [hasNext, setHasNext] = useState(false);
 
   useEffect(() => { setPage(1); }, [recommendedOnly, selectedCategory, searchTerm]);
@@ -79,9 +81,6 @@ export default function RestaurantsPage() {
 
         if (canceled) return;
 
-        console.log("[DEBUG][list] params =>", params, { categoryCode });
-        console.log("[DEBUG][list] raw response =>", resp);
-
         const list = resp.items ?? [];
         setServerList(list);
         setHasNext(Boolean(resp.hasNext));
@@ -105,7 +104,7 @@ export default function RestaurantsPage() {
 
   const viewList = useMemo(() => {
     return serverList.map((r) => ({
-      id: r.id, // ✅ 상세 라우팅용 숫자 id
+      id: r.id,
       name: r.name,
       category: serverToKoCat(r.category),
       location: r.address,
@@ -113,6 +112,10 @@ export default function RestaurantsPage() {
       isRecommended: !!r.is_sponsored,
     }));
   }, [serverList]);
+
+  // ✅ 현재 목록의 쿼리스트링을 상세로 고스란히 전달
+  const qs = searchParams?.toString();
+  const tail = qs ? `?${qs}` : "";
 
   return (
     <div className="min-h-screen bg-background">
@@ -168,7 +171,6 @@ export default function RestaurantsPage() {
           </div>
         </div>
 
-        {/* 에러 */}
         {err && (
           <div className="mb-4 p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
             {err}
@@ -183,20 +185,17 @@ export default function RestaurantsPage() {
               <Card
                 key={restaurant.id}
                 className="cursor-pointer hover:shadow-lg transition-shadow"
-                // ✅ 상세는 반드시 숫자 id로 이동
-                onClick={() => router.push(`/restaurants/${restaurant.id}`)}
+                onClick={() => router.push(`/restaurants/${restaurant.id}${tail}`)} // ✅ 쿼리 유지
               >
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex-1">
-                      {/* 이름 옆 추천 뱃지 */}
                       <h3 className="font-semibold text-lg mb-1 flex items-center gap-2">
                         {restaurant.name}
                         {restaurant.isRecommended && (
                           <Badge className="text-[11px] px-2 py-0.5">추천</Badge>
                         )}
                       </h3>
-
                       <div className="flex items-center space-x-2 text-sm text-muted-foreground mb-2">
                         <Badge variant="outline" className="text-xs">
                           {restaurant.category}
@@ -204,7 +203,6 @@ export default function RestaurantsPage() {
                       </div>
                     </div>
                   </div>
-
                   <div className="flex items-center space-x-4 text-sm text-muted-foreground mb-3">
                     <div className="flex items-center">
                       <MapPin className="w-3 h-3 mr-1" />

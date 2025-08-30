@@ -10,7 +10,9 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { MapPin, Clock, Users, Trash2 } from "lucide-react";
+
 import { apiRequest, eventAPI } from "@/lib/api";
+import { eventAPI_mutation } from "@/lib/api.routes";
 
 const DEFAULT_MAX = 4;
 
@@ -124,6 +126,7 @@ export default function EventDetailPage() {
   }, []);
 
   const dateLabel = useMemo(() => toDateLabel(detail.startISO), [detail.startISO]);
+  const isApplied = myApplicationId != null && Number(myApplicationId) > 0;
 
   useEffect(() => {
     (async () => {
@@ -163,35 +166,19 @@ export default function EventDetailPage() {
           avatar: null,
         };
 
-        const hasHost =
-          host.id != null && participants.some((p) => String(p.id ?? "") === String(host.id ?? ""));
-
-        // A 방법: 호스트에도 nickname 포함시켜 타입 통일
+        const hasHost = host.id != null && participants.some((p) => String(p.id ?? "") === String(host.id ?? ""));
         const mergedParticipants: Participant[] = hasHost
           ? participants
-          : [
-              {
-                id: host.id,
-                name: host.name,
-                nickname: host.name,
-                avatar: host.avatar,
-              },
-              ...participants,
-            ];
+          : [{ id: host.id, name: host.name, nickname: host.name, avatar: host.avatar }, ...participants];
 
         const displayCount = row.participantsCount ?? Math.max(1, mergedParticipants.length);
 
-        // 이번 로드에서 사용할 닉네임 맵 (레이스 방지)
         const nicknameMapFromRow = new Map<string, string>();
         if (host.id && host.name) nicknameMapFromRow.set(String(host.id), host.name);
         for (const p of mergedParticipants) {
-          if (p?.id && (p?.name || p?.nickname)) {
-            nicknameMapFromRow.set(String(p.id), p.name ?? p.nickname!);
-          }
+          if (p?.id && (p?.name || p?.nickname)) nicknameMapFromRow.set(String(p.id), p.name ?? p.nickname!);
         }
-        if (me?.id && (me?.nickname || me?.name)) {
-          nicknameMapFromRow.set(String(me.id), me.nickname ?? me.name);
-        }
+        if (me?.id && (me?.nickname || me?.name)) nicknameMapFromRow.set(String(me.id), me.nickname ?? me.name);
 
         setDetail({
           id: row.id,
@@ -217,8 +204,17 @@ export default function EventDetailPage() {
         const hostId = Number(row.creatorId ?? row.creator_id ?? row.hostId ?? NaN);
         setIsHost(myId != null && Number.isFinite(hostId) && hostId === myId);
 
+        // 서버가 주는 신청ID
         const appId = Number(row.myApplicationId ?? row.my_application_id ?? NaN);
-        setMyApplicationId(Number.isFinite(appId) ? appId : null);
+        setMyApplicationId(Number.isFinite(appId) && appId > 0 ? appId : null);
+
+        // ★ 폴백: 서버가 아직 안 줄 때 로컬 저장본 사용
+        if ((!Number.isFinite(appId) || !(appId > 0)) && typeof window !== "undefined") {
+          const saved = Number(localStorage.getItem(`appId:${row.id}`) ?? NaN);
+          if (Number.isFinite(saved) && saved > 0) {
+            setMyApplicationId(saved);
+          }
+        }
 
         await reloadComments(String(row.id), nicknameMapFromRow);
       } catch (e: any) {
@@ -231,9 +227,6 @@ export default function EventDetailPage() {
     })();
   }, [eventId, me]);
 
-  /** 댓글 목록 로드
-   * 우선순위: payload.nickname → 관계객체 닉/이름 → 전달받은 nicknameMap → "사용자"
-   */
   async function reloadComments(idForComments: string, nicknameMap?: Map<string, string>) {
     try {
       const r: any = await apiRequest(`/api/events/${encodeURIComponent(idForComments)}/comments`);
@@ -277,7 +270,6 @@ export default function EventDetailPage() {
     }
   }
 
-  // 댓글 작성 (camelCase 우선, 실패 시 snake_case 재시도)
   async function createComment() {
     if (!newComment.trim() || !detail.id) return;
     setPosting(true);
@@ -306,7 +298,6 @@ export default function EventDetailPage() {
 
       setNewComment("");
 
-      // 최신 맵으로 재로드
       const map = new Map<string, string>();
       if (detail?.host?.id && detail?.host?.name) map.set(String(detail.host.id), detail.host.name!);
       for (const p of detail.participants ?? []) {
@@ -337,6 +328,113 @@ export default function EventDetailPage() {
       setDeletingId(null);
     }
   }
+
+  /* ====== 참여하기 / 신청 취소 (낙관적 토글) ====== */
+  const applyToEvent = async () => {
+    if (!meId) { alert("로그인이 필요합니다."); return; }
+    if (!detail.id || busy) return;
+
+    const prevAppId = myApplicationId;
+    const prevParts = detail.participants;
+    const prevCount = detail.currentParticipants ?? prevParts.length;
+
+    setBusy(true);
+    try {
+      // UI 선반영
+      if (me?.id) {
+        const already = prevParts.some((p) => String(p.id) === String(me.id));
+        if (!already) {
+          setDetail((prev) => ({
+            ...prev,
+            participants: [
+              ...prev.participants,
+              { id: me.id, name: me.nickname ?? me.name ?? "나", nickname: me.nickname ?? me.name ?? "나", avatar: me?.avatar ?? null },
+            ],
+            currentParticipants: prevCount + 1,
+          }));
+        }
+      }
+
+      const res: any = await eventAPI_mutation.applyToEvent(Number(detail.id));
+
+      // 다양한 응답 구조에서 ID 추출
+      const pickNumber = (v: any) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : NaN);
+      const newIdCandidates = [
+        res?.applicationId,
+        res?.success?.applicationId,
+        res?.success?.id,
+        res?.id,
+        res?.data?.id,
+      ];
+      const picked = newIdCandidates.map(pickNumber).find((n) => Number.isFinite(n)) as number | undefined;
+
+      if (picked) {
+        setMyApplicationId(picked);
+        if (typeof window !== "undefined") localStorage.setItem(`appId:${detail.id}`, String(picked));
+      } else {
+        // 폴백: 상세 재조회
+        const fresh: any = await eventAPI.getEvent(String(detail.id));
+        const appId =
+          pickNumber(fresh?.myApplicationId) ||
+          pickNumber(fresh?.my_application_id) ||
+          pickNumber((fresh?.success ?? {}).id);
+        if (appId) {
+          setMyApplicationId(appId);
+          if (typeof window !== "undefined") localStorage.setItem(`appId:${detail.id}`, String(appId));
+        } else {
+          throw new Error("신청은 처리됐지만 신청 ID 확인에 실패했습니다.");
+        }
+      }
+    } catch (e: any) {
+      // 실패 시 원복
+      setMyApplicationId(prevAppId ?? null);
+      setDetail((prev) => ({
+        ...prev,
+        participants: prevParts,
+        currentParticipants: prevCount,
+      }));
+      alert(e?.message || "신청에 실패했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelApplication = async () => {
+    const appIdNum = Number(myApplicationId);
+    if (!detail.id || !Number.isFinite(appIdNum) || appIdNum <= 0 || busy) return;
+
+    const prevAppId = myApplicationId;
+    const prevParts = detail.participants;
+    const prevCount = detail.currentParticipants ?? prevParts.length;
+
+    setBusy(true);
+    try {
+      // UI 선반영(내 계정 제거)
+      if (me?.id) {
+        const removed = prevParts.filter((p) => String(p.id) !== String(me.id));
+        setDetail((prev) => ({
+          ...prev,
+          participants: removed,
+          currentParticipants: Math.max(0, prevCount - 1),
+        }));
+      }
+
+      await eventAPI_mutation.cancelApplication(Number(detail.id), appIdNum);
+      setMyApplicationId(null);
+      if (typeof window !== "undefined") localStorage.removeItem(`appId:${detail.id}`);
+    } catch (e: any) {
+      // 실패 시 원복
+      setMyApplicationId(prevAppId);
+      setDetail((prev) => ({
+        ...prev,
+        participants: prevParts,
+        currentParticipants: prevCount,
+      }));
+      alert(e?.message || "신청 취소에 실패했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (!eventId) {
     return <div className="min-h-screen grid place-items-center text-destructive">유효하지 않은 이벤트 ID 입니다.</div>;
@@ -374,7 +472,7 @@ export default function EventDetailPage() {
               </div>
               <div className="flex items-center text-sm text-muted-foreground">
                 <Users className="w-4 h-4 mr-1" />
-                {detail.currentParticipants ?? 1}/{detail.maxParticipants ?? DEFAULT_MAX}
+                {detail.currentParticipants ?? 0}/{detail.maxParticipants ?? DEFAULT_MAX}
               </div>
             </div>
           </CardHeader>
@@ -428,35 +526,12 @@ export default function EventDetailPage() {
                     삭제
                   </Button>
                 </>
-              ) : myApplicationId ? (
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  disabled={busy}
-                  onClick={async () => setMyApplicationId(null)}
-                >
+              ) : isApplied ? (
+                <Button variant="outline" className="w-full" disabled={busy} onClick={cancelApplication}>
                   신청 취소
                 </Button>
               ) : (
-                <Button
-                  className="w-full"
-                  disabled={busy}
-                  onClick={async () => {
-                    if (!meId) {
-                      alert("로그인이 필요합니다.");
-                      return;
-                    }
-                    try {
-                      setBusy(true);
-                      // TODO: 실제 신청 API 연동
-                      setMyApplicationId(1);
-                    } catch (e: any) {
-                      alert(e?.message || "신청에 실패했습니다.");
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
+                <Button className="w-full" disabled={busy} onClick={applyToEvent}>
                   참여하기
                 </Button>
               )}
@@ -548,9 +623,7 @@ export default function EventDetailPage() {
                   </div>
                 );
               })}
-              {comments.length === 0 && (
-                <div className="text-sm text-muted-foreground">아직 댓글이 없습니다.</div>
-              )}
+              {comments.length === 0 && <div className="text-sm text-muted-foreground">아직 댓글이 없습니다.</div>}
             </div>
           </CardContent>
         </Card>
