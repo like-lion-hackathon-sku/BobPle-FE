@@ -1,115 +1,83 @@
+// app/restaurants/[restaurantId]/page.tsx
 "use client";
-
-import { useEffect, useState } from "react";
-import { useRouter, useParams } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, MapPin, Phone, Plus, Heart, Share } from "lucide-react";
-import {
-  restaurantsRepository,
-  type Restaurant,
-} from "@/features/restaurants/restaurants.repository";
+import { ArrowLeft, Check, Heart, MapPin, Phone, Plus, Share } from "lucide-react";
+import { restaurantsRepository, type Restaurant } from "@/features/restaurants/restaurants.repository";
 
-// 폴백 데이터
 function buildMock(): Restaurant {
-  return {
-    id: 999999,
-    name: "목업) 밥맛 좋은집",
-    category: "KOREAN",
-    address: "서울 어딘가 123",
-    telephone: "02-000-0000",
-    is_sponsored: true,
-  };
+  return { id: 999999, name: "목업) 밥맛 좋은집", category: "KOREAN", address: "서울 어딘가 123", telephone: "02-000-0000", is_sponsored: true };
 }
-
 const isNumeric = (v: string) => /^\d+$/.test(v || "");
 
 export default function RestaurantDetailPage() {
   const router = useRouter();
   const params = useParams();
-  const routeId = String(params?.restaurantId ?? "");
+  const sp = useSearchParams();
+
+  const routeId = String((params as any)?.restaurantId ?? "");
+
+  // ✅ 쿼리 우선, 없으면 세션 폴백
+  const { mode, returnUrl } = useMemo(() => {
+    const qMode = sp?.get("mode") || "";
+    const qReturn = sp?.get("return") || "";
+    let sMode = "", sReturn = "";
+    if (typeof window !== "undefined") {
+      try {
+        const raw = sessionStorage.getItem("restaurantSelectCtx");
+        if (raw) {
+          const ctx = JSON.parse(raw);
+          sMode = ctx?.mode || "";
+          sReturn = ctx?.return || "";
+        }
+      } catch {}
+    }
+    return {
+      mode: qMode || sMode,                          // "select" or ""
+      returnUrl: qReturn || sReturn || "/create",    // 기본은 /create
+    };
+  }, [sp]);
 
   const [data, setData] = useState<Restaurant | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [favorite, setFavorite] = useState(false);
 
-  // **URL 파라미터 로그**
-  useEffect(() => {
-    console.log("[LOG] URL 파라미터 routeId =", routeId);
-  }, [routeId]);
-
-  // 데이터 패치
   useEffect(() => {
     let canceled = false;
     (async () => {
       try {
         setLoading(true);
         setErr(null);
-
         let detail: Restaurant | null = null;
 
-        // 1) 숫자 id로 조회
         if (isNumeric(routeId)) {
-          try {
-            detail = await restaurantsRepository.getRestaurant(Number(routeId));
-            console.log("[LOG] getRestaurant by id:", Number(routeId), detail);
-          } catch (e) {
-            console.log("[LOG] getRestaurant 실패, fallback to search:", e);
-          }
+          try { detail = await restaurantsRepository.getRestaurant(Number(routeId)); } catch {}
         }
-
-        // 2) 이름 검색 fallback
         if (!detail) {
           try {
-            const list = await restaurantsRepository.getRestaurants({
-              page: 1,
-              limit: 1,
-              q: routeId,
-            });
+            const list = await restaurantsRepository.getRestaurants({ page: 1, limit: 1, q: routeId });
             detail = list.items?.[0] ?? null;
-            console.log("[LOG] fallback 검색 결과:", routeId, list);
-          } catch (e) {
-            console.log("[LOG] fallback 검색 실패:", e);
-          }
+          } catch {}
         }
-
-        if (!canceled) {
-          if (detail) {
-            setData(detail);
-            console.log("[LOG] 최종 data 상태:", detail);
-          } else {
-            setErr("식당 정보를 불러오지 못했습니다.");
-            setData(buildMock());
-            console.log("[LOG] 최종 data 상태: mock 데이터로 대체");
-          }
-        }
+        if (!canceled) setData(detail ?? buildMock());
       } catch (e: any) {
-        if (!canceled) {
-          setErr(e?.message || "식당 정보를 불러오지 못했습니다.");
-          setData(buildMock());
-          console.log("[LOG] 에러 발생:", e);
-        }
+        if (!canceled) { setErr(e?.message || "식당 정보를 불러오지 못했습니다."); setData(buildMock()); }
       } finally {
         if (!canceled) setLoading(false);
       }
     })();
-    return () => {
-      canceled = true;
-    };
+    return () => { canceled = true; };
   }, [routeId]);
 
   const categoryKo =
-    data?.category === "KOREAN"
-      ? "한식"
-      : data?.category === "JAPANESE"
-      ? "일식"
-      : data?.category === "CHINESE"
-      ? "중식"
-      : "기타";
+    data?.category === "KOREAN" ? "한식" :
+    data?.category === "JAPANESE" ? "일식" :
+    data?.category === "CHINESE" ? "중식" : "기타";
 
-  // **생성 페이지로 이동할 때 로그**
   const goCreate = () => {
     if (!data) return;
     const qs = new URLSearchParams({
@@ -117,31 +85,20 @@ export default function RestaurantDetailPage() {
       name: data.name ?? "",
       address: data.address ?? "",
     });
-    const target = `/create?${qs.toString()}`;
-    console.log("[LOG] 생성 페이지로 이동:", {
-      id: String(data.id ?? ""),
-      name: data.name ?? "",
-      address: data.address ?? "",
-      url: target,
-    });
-    router.push(target);
+    router.push(`/create?${qs.toString()}`);
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-muted-foreground">
-        불러오는 중...
-      </div>
-    );
-  }
+  // ✅ 선택 → return 으로 이동 + 세션 정리
+  const selectAndReturn = () => {
+    if (!data) return;
+    if (typeof window !== "undefined") sessionStorage.removeItem("restaurantSelectCtx");
+    router.push(`${returnUrl}?restaurantId=${encodeURIComponent(String(data.id))}`);
+  };
 
-  if (!data) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-red-500">
-        {err || "데이터가 없습니다."}
-      </div>
-    );
-  }
+  if (loading) return <div className="min-h-screen grid place-items-center text-muted-foreground">불러오는 중...</div>;
+  if (!data) return <div className="min-h-screen grid place-items-center text-destructive">{err || "데이터가 없습니다."}</div>;
+
+  const isSelectMode = mode === "select";
 
   return (
     <div className="min-h-screen bg-background">
@@ -151,8 +108,8 @@ export default function RestaurantDetailPage() {
             <Button variant="ghost" size="sm" onClick={() => router.back()}>
               <ArrowLeft className="w-4 h-4" />
             </Button>
-            <div className="flex items-center space-x-2">
-              <Button variant="ghost" size="sm" onClick={() => setFavorite((v) => !v)}>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setFavorite(v => !v)}>
                 <Heart className={`w-4 h-4 ${favorite ? "fill-current text-red-500" : ""}`} />
               </Button>
               <Button variant="ghost" size="sm">
@@ -165,11 +122,7 @@ export default function RestaurantDetailPage() {
 
       <div className="container mx-auto px-4 py-6 max-w-4xl">
         <div className="mb-6">
-          <img
-            src="/placeholder.svg"
-            alt={data.name}
-            className="w-full h-64 md:h-80 object-cover rounded-lg"
-          />
+          <img src="/placeholder.svg" alt={data.name} className="w-full h-64 md:h-80 object-cover rounded-lg" />
         </div>
 
         <Card className="mb-6">
@@ -183,7 +136,7 @@ export default function RestaurantDetailPage() {
             <div className="flex items-start justify-between mb-4">
               <div className="flex-1">
                 <h1 className="text-2xl font-bold mb-2">{data.name}</h1>
-                <div className="flex items-center space-x-4 mb-3">
+                <div className="flex items-center gap-4 mb-3">
                   <Badge variant="outline">{categoryKo}</Badge>
                   {data.is_sponsored && <Badge>추천</Badge>}
                 </div>
@@ -191,23 +144,22 @@ export default function RestaurantDetailPage() {
             </div>
 
             <div className="space-y-3 mb-4 text-sm text-muted-foreground">
-              <div className="flex items-center space-x-2">
-                <MapPin className="w-4 h-4" />
-                <span>{data.address}</span>
-              </div>
-              {data.telephone && (
-                <div className="flex items-center space-x-2">
-                  <Phone className="w-4 h-4" />
-                  <span>{data.telephone}</span>
-                </div>
-              )}
+              <div className="flex items-center gap-2"><MapPin className="w-4 h-4" /><span>{data.address}</span></div>
+              {data.telephone && <div className="flex items-center gap-2"><Phone className="w-4 h-4" /><span>{data.telephone}</span></div>}
             </div>
 
             <div className="flex gap-3">
-              <Button className="flex-1" onClick={goCreate}>
-                <Plus className="w-4 h-4 mr-2" />
-                이 식당에서 밥약 만들기
-              </Button>
+              {isSelectMode ? (
+                <Button className="flex-1" onClick={selectAndReturn}>
+                  <Check className="w-4 h-4 mr-2" />
+                  이 식당 선택하기
+                </Button>
+              ) : (
+                <Button className="flex-1" onClick={goCreate}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  이 식당에서 밥약 만들기
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>

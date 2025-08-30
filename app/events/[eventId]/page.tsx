@@ -9,14 +9,12 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
-import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MapPin, Clock, Users, Trash2 } from "lucide-react";
-import { eventAPI, apiRequest } from "@/lib/api";
+import { apiRequest, eventAPI } from "@/lib/api";
+import { eventAPI_mutation, commentAPI } from "@/lib/api.routes";
 
-/* ===== 상수 ===== */
 const DEFAULT_MAX = 4;
 
-/* ===== 타입 ===== */
 type Participant = { id?: number | string; nickname?: string; name?: string; avatar?: string | null };
 type CommentItem = {
   id: number | string;
@@ -40,7 +38,6 @@ type EventDetail = {
   participants: Participant[];
 };
 
-/* ===== 유틸 ===== */
 const toHHMM = (iso?: string | null) => {
   if (!iso) return null;
   const d = new Date(iso);
@@ -60,31 +57,18 @@ const toDateLabel = (iso?: string | null) => {
   });
 };
 
-/** 식당 조회: 1) /restaurants/:id → 2) /restaurants?q=:id (둘 다 실패 시 null) */
-async function fetchRestaurantById(
-  restaurantId: number
-): Promise<{ name?: string | null; address?: string | null }> {
+async function fetchRestaurantById(restaurantId: number): Promise<{ name?: string | null; address?: string | null }> {
   try {
     const r = await apiRequest(`/api/restaurants/${restaurantId}`);
     const d = r?.data ?? r;
-    if (d) {
-      return {
-        name: d.name ?? d.restaurantName ?? null,
-        address: d.address ?? d.roadAddress ?? null,
-      };
-    }
+    if (d) return { name: d.name ?? d.restaurantName ?? null, address: d.address ?? d.roadAddress ?? null };
   } catch {}
   try {
     const r = await apiRequest(`/api/restaurants?q=${encodeURIComponent(String(restaurantId))}`);
     const d = r?.data ?? r;
     const list: any[] = Array.isArray(d?.items) ? d.items : Array.isArray(d) ? d : [];
     const hit = list.find((x) => Number(x.id) === Number(restaurantId));
-    if (hit) {
-      return {
-        name: hit.name ?? hit.restaurantName ?? null,
-        address: hit.address ?? hit.roadAddress ?? null,
-      };
-    }
+    if (hit) return { name: hit.name ?? hit.restaurantName ?? null, address: hit.address ?? hit.roadAddress ?? null };
   } catch {}
   return { name: null, address: null };
 }
@@ -112,13 +96,19 @@ export default function EventDetailPage() {
     host: undefined,
     participants: [],
   });
+
   const [comments, setComments] = useState<CommentItem[]>([]);
   const [newComment, setNewComment] = useState("");
   const [loading, setLoading] = useState(true);
   const [posting, setPosting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | number | null>(null);
   const [error, setError] = useState<string>("");
-  const [showApplyDialog, setShowApplyDialog] = useState(false);
+
+  // 권한/신청 상태
+  const [meId, setMeId] = useState<number | null>(null);
+  const [isHost, setIsHost] = useState(false);
+  const [myApplicationId, setMyApplicationId] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -137,14 +127,12 @@ export default function EventDetailPage() {
         const startHHMM = toHHMM(row.startISO);
         const endHHMM = toHHMM(row.endISO);
 
-        // 장소/주소 보강
         let location: string | null = row.restaurantAddress ?? row.restaurantName ?? null;
         if (!location && row.restaurantId) {
           const r = await fetchRestaurantById(Number(row.restaurantId));
           location = r.address ?? r.name ?? `식당 #${row.restaurantId}`;
         }
 
-        // 참가자 목록 매핑
         const participants: Participant[] = Array.isArray(row.participants)
           ? row.participants.map((p: any) => ({
               id: p.id,
@@ -154,25 +142,18 @@ export default function EventDetailPage() {
             }))
           : [];
 
-        // 호스트 객체
         const host = {
-          id: row.creatorId ?? undefined,
+          id: row.creatorId ?? row.creator_id ?? undefined,
           name: row.creatorNickname ?? "호스트",
           avatar: null,
         };
 
-        // 호스트를 참가자에 합치기(중복 방지)
-        const hasHost =
-          host.id != null &&
-          participants.some((p) => String(p.id ?? "") === String(host.id ?? ""));
+        const hasHost = host.id != null && participants.some((p) => String(p.id ?? "") === String(host.id ?? ""));
         const mergedParticipants = hasHost
           ? participants
           : [{ id: host.id, name: host.name, avatar: host.avatar }, ...participants];
 
-        // 표시용 현재 인원(서버 값이 있으면 사용, 없으면 merged 길이, 최소 1)
-        const displayCount =
-          row.participantsCount ??
-          Math.max(1, mergedParticipants.length);
+        const displayCount = row.participantsCount ?? Math.max(1, mergedParticipants.length);
 
         const mapped: EventDetail = {
           id: row.id,
@@ -189,8 +170,23 @@ export default function EventDetailPage() {
           host,
           participants: mergedParticipants,
         };
-
         setDetail(mapped);
+
+        // ---- 권한/신청 상태 추출 ----
+        const meFromServer = Number(row.me?.id ?? row.meId ?? row.userId ?? NaN);
+        const meFromLS =
+          typeof window !== "undefined"
+            ? Number((JSON.parse(localStorage.getItem("user") || "null") || {})?.id)
+            : NaN;
+        const myId = Number.isFinite(meFromServer) ? meFromServer : Number.isFinite(meFromLS) ? meFromLS : null;
+        setMeId(myId);
+
+        const hostId = Number(row.creatorId ?? row.creator_id ?? row.hostId ?? NaN);
+        setIsHost(myId != null && Number.isFinite(hostId) && hostId === myId);
+
+        const appId = Number(row.myApplicationId ?? row.my_application_id ?? NaN);
+        setMyApplicationId(Number.isFinite(appId) ? appId : null);
+
         await reloadComments(String(mapped.id));
       } catch (e: any) {
         console.error("[event:detail] load failed:", e);
@@ -204,17 +200,15 @@ export default function EventDetailPage() {
 
   const dateLabel = useMemo(() => toDateLabel(detail.startISO), [detail.startISO]);
 
-  // ===== 댓글 목록 =====
   async function reloadComments(idForComments: string) {
     try {
-      const r: any = await apiRequest(`/api/events/${encodeURIComponent(idForComments)}/comments`);
+      const r: any = await commentAPI.getEventComments(idForComments);
       const rawList: any[] = Array.isArray(r?.items) ? r.items : Array.isArray(r) ? r : [];
       const mapped: CommentItem[] = rawList.map((c: any) => ({
         id: c.id,
         user: {
           id: c.users?.id ?? c.user?.id ?? c.creator?.id ?? undefined,
-          name:
-            c.users?.nickname ?? c.user?.nickname ?? c.user?.name ?? c.creator?.nickname ?? "사용자",
+          name: c.users?.nickname ?? c.user?.nickname ?? c.user?.name ?? c.creator?.nickname ?? "사용자",
           avatar: c.users?.avatar ?? c.user?.avatar ?? null,
         },
         content: c.content ?? "",
@@ -227,39 +221,18 @@ export default function EventDetailPage() {
     }
   }
 
-  // ===== 댓글 작성 (최종본) =====
   async function createComment() {
     if (!newComment.trim() || !detail.id) return;
     setPosting(true);
     try {
       const me =
-        typeof window !== "undefined"
-          ? JSON.parse(localStorage.getItem("user") || "null")
-          : null;
-
+        typeof window !== "undefined" ? JSON.parse(localStorage.getItem("user") || "null") : null;
       const creatorId = Number(me?.id);
       const eventNumericId = Number(detail.id);
+      if (!Number.isFinite(creatorId)) throw new Error("로그인 사용자 ID(creator_id)를 찾을 수 없습니다.");
+      if (!Number.isFinite(eventNumericId)) throw new Error("이벤트 ID(event_id)가 유효하지 않습니다.");
 
-      if (!Number.isFinite(creatorId)) {
-        throw new Error("로그인 사용자 ID(creator_id)를 찾을 수 없습니다.");
-      }
-      if (!Number.isFinite(eventNumericId)) {
-        throw new Error("이벤트 ID(event_id)가 유효하지 않습니다.");
-      }
-
-      // ERD에 맞춰 snake_case 필드로 전송
-      await apiRequest(`/api/events/${encodeURIComponent(String(detail.id))}/comments`, {
-        method: "POST",
-        body: JSON.stringify({
-          content: newComment.trim(),
-          creatorId: creatorId,
-          eventId: eventNumericId,
-        }),
-        headers: {
-          "Content-Type": "application/json",
-        } as any,
-      });
-
+      await commentAPI.createComment(eventNumericId, newComment.trim(), creatorId);
       setNewComment("");
       await reloadComments(String(detail.id));
     } catch (e) {
@@ -269,15 +242,11 @@ export default function EventDetailPage() {
     }
   }
 
-  // ===== 댓글 삭제 =====
   async function deleteComment(commentId: number | string) {
     if (!detail.id) return;
     setDeletingId(commentId);
     try {
-      await apiRequest(
-        `/api/events/${encodeURIComponent(String(detail.id))}/comments/${commentId}`,
-        { method: "DELETE" }
-      );
+      await commentAPI.deleteComment(Number(detail.id), Number(commentId));
       setComments((prev) => prev.filter((c) => c.id !== commentId));
     } catch (e) {
       console.error("[comments] delete failed:", e);
@@ -343,39 +312,82 @@ export default function EventDetailPage() {
               </div>
             )}
 
-            {/* 참여하기 → 확인 다이얼로그 */}
-            <Dialog open={showApplyDialog} onOpenChange={setShowApplyDialog}>
-              <DialogTrigger asChild>
-                <Button className="w-full" disabled={!detail.id}>참여하기</Button>
-              </DialogTrigger>
-
-              <DialogContent className="sm:max-w-md">
-                <DialogHeader>
-                  <DialogTitle>밥약 참여 신청</DialogTitle>
-                </DialogHeader>
-                <p className="text-sm text-muted-foreground mb-4">
-                  ‘{detail.title}’ 밥약에 참여하시겠습니까?
-                </p>
-                <div className="flex gap-3">
+            {/* 액션 버튼: 호스트(수정/삭제) vs 외부인(신청/신청취소) */}
+            <div className="flex gap-2">
+              {isHost ? (
+                <>
                   <Button
                     variant="outline"
-                    className="flex-1 h-10 bg-transparent"
-                    onClick={() => setShowApplyDialog(false)}
+                    className="flex-1"
+                    onClick={() => router.push(`/events/${detail.id}/edit`)}
+                    disabled={busy}
                   >
-                    취소
+                    수정
                   </Button>
                   <Button
-                    className="flex-1 h-10"
-                    onClick={() => {
-                      setShowApplyDialog(false);
-                      router.push(`/chat/${detail.id}`);
+                    variant="destructive"
+                    className="flex-1"
+                    disabled={busy}
+                    onClick={async () => {
+                      if (!detail.id) return;
+                      if (!confirm("이 밥약을 삭제(취소)할까요?")) return;
+                      try {
+                        setBusy(true);
+                        await eventAPI_mutation.deleteEvent(Number(detail.id));
+                        router.back(); // 또는 router.push("/events")
+                      } catch (e: any) {
+                        alert(e?.message || "삭제에 실패했습니다.");
+                      } finally {
+                        setBusy(false);
+                      }
                     }}
                   >
-                    참여하기
+                    삭제
                   </Button>
-                </div>
-              </DialogContent>
-            </Dialog>
+                </>
+              ) : myApplicationId ? (
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  disabled={busy}
+                  onClick={async () => {
+                    try {
+                      setBusy(true);
+                      await eventAPI_mutation.cancelApplication(Number(detail.id), myApplicationId);
+                      setMyApplicationId(null);
+                    } catch (e: any) {
+                      alert(e?.message || "신청 취소에 실패했습니다.");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  신청 취소
+                </Button>
+              ) : (
+                <Button
+                  className="w-full"
+                  disabled={busy}
+                  onClick={async () => {
+                    if (!meId) {
+                      alert("로그인이 필요합니다.");
+                      return;
+                    }
+                    try {
+                      setBusy(true);
+                      const res = await eventAPI_mutation.applyToEvent(Number(detail.id));
+                      setMyApplicationId(res.applicationId);
+                    } catch (e: any) {
+                      alert(e?.message || "신청에 실패했습니다.");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  참여하기
+                </Button>
+              )}
+            </div>
           </CardContent>
         </Card>
 
