@@ -18,19 +18,20 @@ export type RestaurantPage = {
 };
 
 /** 서버 응답의 다양한 스펙을 안전하게 정규화 */
-function normalizeItem(raw: any): Restaurant {
-  // category: KOREAN/JAPANESE/CHINESE 로 통일
+function normalizeItem(raw: any, fallbackId?: number | string): Restaurant {
   const v = String(raw?.category ?? raw?.cat ?? "").toLowerCase();
   const category =
     v === "korean" ? "KOREAN" :
     v === "japanese" ? "JAPANESE" :
     v === "chinese" ? "CHINESE" : (raw?.category ?? "ETC");
 
-  // 추천 여부: 문자열 "true"/"false" → boolean 변환
   const isSponsoredRaw = raw?.is_sponsored ?? raw?.isSponsored ?? raw?.sponsored ?? false;
 
+  const idRaw =
+    raw?.id ?? raw?._id ?? raw?.rid ?? raw?.restaurantId ?? fallbackId;
+
   return {
-    id: raw?.id ?? raw?._id ?? raw?.rid ?? raw?.restaurantId ?? undefined,
+    id: typeof idRaw === "string" && /^\d+$/.test(idRaw) ? Number(idRaw) : idRaw,
     name: raw?.name ?? "이름없음",
     category,
     address: raw?.address ?? null,
@@ -88,24 +89,50 @@ function buildQuery(params: {
 export const restaurantsRepository = {
   /** 기본 목록 */
   async getRestaurants(params: {
-  page?: number; limit?: number; q?: string; category?: string; sponsoredOnly?: string|number|boolean;
+  page?: number;
+  limit?: number;
+  q?: string;
+  category?: string;
+  sponsoredOnly?: string | number | boolean;
 } = {}): Promise<RestaurantPage> {
   const page  = params.page  ?? 1;
   const limit = params.limit ?? 5;
 
-  const qs  = buildQuery({ page, limit, q: params.q, category: params.category, sponsoredOnly: params.sponsoredOnly });
-  const res = await apiRequest(`/api/restaurants?${qs}`);
+  const qs = buildQuery({
+    page,
+    limit,
+    q: params.q,
+    category: params.category,
+    sponsoredOnly: params.sponsoredOnly,
+  });
 
-  // ✅ 여기가 핵심: 원본 응답과 첫 번째 아이템의 키를 그대로 찍어본다
+  let res: any;
+  try {
+    res = await apiRequest(`/api/restaurants?${qs}`);
+  } catch (e) {
+    console.debug('[DEBUG][restaurants] request failed:', e);
+    // 실패 시 빈 목록으로 리턴(화면이 안죽도록)
+    return { items: [], page, limit, hasNext: false, total: 0 };
+  }
+
+  // 원본 찍기
   console.debug('[DEBUG][restaurants] raw response:', res);
+
+  // 배열 꺼내기
   const rawArr = extractArray(res);
-  console.debug('[DEBUG][restaurants] first item keys:', rawArr?.[0] ? Object.keys(rawArr[0]) : '(none)');
+  console.debug(
+    '[DEBUG][restaurants] first item keys:',
+    rawArr?.[0] ? Object.keys(rawArr[0]) : '(none)'
+  );
 
-  const arr   = rawArr.map(normalizeItem);
+  // ✅ 반드시 람다로 감싸서 한 개 인자만 전달 (TS 인자수 문제/인덱스 주입 방지)
+  const arr = rawArr.map((row: any) => normalizeItem(row));
+
+  // total/hasNext 계산
   const total = extractTotal(res);
-
-  const baseHasNext = typeof total === "number" ? page * limit < total : arr.length === limit;
-  const hasNext     = extractHasNext(res, baseHasNext);
+  const baseHasNext =
+    typeof total === 'number' ? page * limit < total : arr.length === limit;
+  const hasNext = extractHasNext(res, baseHasNext);
 
   return { items: arr, page, limit, hasNext, total };
 },
@@ -118,8 +145,23 @@ export const restaurantsRepository = {
   /** 단건 조회 */
   async getRestaurant(id: number | string): Promise<Restaurant> {
     const res = await apiRequest(`/api/restaurants/${id}`);
-    const arr = extractArray(res);
-    return arr.length ? normalizeItem(arr[0]) : normalizeItem(res);
+
+    // 1) swagger/BE가 { success: {...} } 혹은 { data: {...} } 로 주는 케이스 처리
+    const row = (res && typeof res === "object" && (res as any).success)
+      ? (res as any).success
+      : (res && typeof res === "object" && (res as any).data)
+      ? (res as any).data
+      : res;
+
+    // 2) 혹시 배열로 오는 케이스도 방어
+    const arr = Array.isArray(row) ? row : (Array.isArray((row as any)?.items) ? (row as any).items : null);
+    const picked = arr && arr.length ? arr[0] : row;
+
+    // 3) id를 BE가 안 줄 수도 있어, 파라미터로 보정
+    const normalized = normalizeItem(picked);
+    if (normalized.id == null) normalized.id = typeof id === "number" ? id : Number(id) || id;
+
+    return normalized;
   },
 
   /**

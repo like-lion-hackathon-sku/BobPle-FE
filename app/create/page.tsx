@@ -1,3 +1,4 @@
+// app/create/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -7,21 +8,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeft, Search } from "lucide-react";
 import { eventAPI } from "@/lib/api";
-
-const genderOptions = [
-  { value: "all", label: "상관없음" },
-  { value: "female", label: "여자만" },
-  { value: "male", label: "남자만" },
-];
 
 export default function CreateEventPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // ✅ 쿼리 파라미터 추출 (id, name, address 우선)
+  // 쿼리 파라미터(id, name, address 우선)
   const qpId = searchParams.get("id") ?? searchParams.get("restaurantId") ?? "";
   const qpName = searchParams.get("name") ?? searchParams.get("restaurant") ?? "";
   const qpAddress = searchParams.get("address") ?? searchParams.get("location") ?? "";
@@ -31,8 +25,6 @@ export default function CreateEventPage() {
     content: "",
     restaurant: qpName,
     location: qpAddress,
-    maxParticipants: 2,
-    genderRestriction: "all",
   });
 
   const [startDate, setStartDate] = useState("");
@@ -42,15 +34,7 @@ export default function CreateEventPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  // ✅ 페이지 진입 시 쿼리 값 로그
   useEffect(() => {
-    console.log("[DEBUG][create] Query Params:", {
-      id: qpId,
-      name: qpName,
-      address: qpAddress,
-      fullUrl: typeof window !== "undefined" ? window.location.href : "",
-    });
-
     setFormData((prev) => ({
       ...prev,
       restaurant: qpName,
@@ -90,13 +74,11 @@ export default function CreateEventPage() {
         endAt: toISO(endDate, endTime),
       };
 
-      const response = await eventAPI.createEvent(payload);
+      const response: any = await eventAPI.createEvent(payload);
 
-      if (!response || (response as any).error) {
-        throw new Error((response as any)?.message || "생성 실패");
-      }
-
-      router.push("/");
+      // 생성 후 이동(응답에 id 있으면 상세로 이동)
+      const newId = response?.id ?? response?.data?.id;
+      router.push(newId ? `/events/${newId}` : "/");
     } catch (err: any) {
       console.error("밥약 생성 실패:", err);
       setError(err?.message || "밥약 생성에 실패했습니다.");
@@ -249,56 +231,6 @@ export default function CreateEventPage() {
                   </p>
                 </div>
               )}
-            </CardContent>
-          </Card>
-
-          {/* 참여자 설정 (UI 전용) */}
-          <Card>
-            <CardHeader>
-              <CardTitle>참여자 설정</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <Label htmlFor="maxParticipants">최대 참여자 수</Label>
-                <Select
-                  value={formData.maxParticipants.toString()}
-                  onValueChange={(value) =>
-                    setFormData((prev) => ({ ...prev, maxParticipants: Number.parseInt(value) }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {[2, 3, 4].map((num) => (
-                      <SelectItem key={num} value={num.toString()}>
-                        {num}명
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div>
-                <Label htmlFor="genderRestriction">성별 제한</Label>
-                <Select
-                  value={formData.genderRestriction}
-                  onValueChange={(value) =>
-                    setFormData((prev) => ({ ...prev, genderRestriction: value }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {genderOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
             </CardContent>
           </Card>
 
