@@ -1,115 +1,182 @@
+// lib/api.core.ts
+
 /**
- * 코어 네트워킹 유틸 (공유)
- * - API_BASE_URL
- * - getAuthToken
- * - apiRequest (로그인/리프레시에 Authorization 제외)
- * - refreshPOST (POST /api/auth/refresh, 슬래시 유/무 백업)
- * - 타입(Profile)
+ * 공용 네트워킹 유틸
+ * - Authorization 자동 부착(localStorage -> cookie fallback)
+ * - JSON 바디 자동 처리(FormData/Blob/ArrayBuffer 제외)
+ * - 401 시 refresh 1회 후 재시도
+ * - 네트워크/HTTP 에러 상세 콘솔 로그
  */
 
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
+export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
 
-/** 로컬 스토리지 토큰(겸용) */
+/* ───────── 토큰 얻기: localStorage → cookie fallback ───────── */
+function getCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
 export function getAuthToken(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("authToken") || localStorage.getItem("accessToken");
+
+  const ls =
+    localStorage.getItem("authToken") ||
+    localStorage.getItem("accessToken");
+  if (ls) return ls;
+
+  // accessToken 이거나 오타(accesToken)도 허용
+  const ck =
+    getCookie("accessToken") ||
+    getCookie("accesToken") ||
+    null;
+
+  if (ck) {
+    try { localStorage.setItem("authToken", ck); } catch {}
+    return ck;
+  }
+  return null;
 }
 
-/** ✅ 공통 fetch: 쿠키 포함 */
-
-// URL 깔끔 합치기 (proxy/직접호출 둘 다 안전)
+/* ───────── 유틸 ───────── */
 function joinPath(base: string, path: string) {
   if (!base) return path;
-  return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+  return `${base.replace(/\/+$/, "")}/${String(path || "").replace(/^\/+/, "")}`;
+}
+function isBinaryBody(v: any) {
+  return v instanceof FormData || v instanceof Blob || v instanceof ArrayBuffer;
+}
+function looksLikeJsonString(s: string) {
+  const t = s.trim();
+  return t.startsWith("{") || t.startsWith("[");
 }
 
+/* ───────── 공통 요청 ───────── */
 export async function apiRequest<T = any>(
   endpoint: string,
   init: RequestInit = {}
 ): Promise<T> {
   const token = getAuthToken();
-
   const isLoginCall   = endpoint.startsWith("/api/auth/login");
   const isRefreshCall = endpoint.startsWith("/api/auth/refresh");
 
-  const headers: HeadersInit = {
-    "Content-Type": "application/json",
-    // 로그인/리프레시는 Bearer 제외, 나머지는 있으면 붙임
-    ...(!isLoginCall && !isRefreshCall && token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(init.headers || {}),
-  };
+  const headers = new Headers(init.headers || {});
+  let body: any = init.body;
+
+  // ① Content-Type 처리 (문자열 JSON도 자동 세팅)
+  if (!headers.has("Content-Type") && !isBinaryBody(body as any)) {
+    if (typeof body === "string") {
+      if (looksLikeJsonString(body)) headers.set("Content-Type", "application/json");
+    } else if (body && typeof body === "object") {
+      headers.set("Content-Type", "application/json");
+      body = JSON.stringify(body);
+    }
+  } else if (!isBinaryBody(body as any) && body && typeof body === "object" && !(typeof body === "string")) {
+    // 사용자가 Content-Type을 이미 지정했어도, 객체면 stringify는 해줌
+    body = JSON.stringify(body);
+  }
+
+  // ② Authorization 자동 부착 (로그인/리프레시는 제외, 사용자가 명시했으면 존중)
+  if (!isLoginCall && !isRefreshCall && token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
 
   const url = joinPath(API_BASE_URL, endpoint);
-  const res = await fetch(url, {
-    credentials: "include",          // ★ 세션 쿠키 유지(프록시용)
-    ...init,
-    headers,
-  });
 
-  // 204 No Content → 기존대로 null 유지(호환성)
+  // 네트워크 레벨 에러 로그
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      credentials: init.credentials ?? "include",
+      cache: init.cache ?? "no-store",
+      ...init,
+      headers,
+      body,
+    });
+  } catch (networkErr: any) {
+    console.error("[apiRequest][NETWORK ERROR]", {
+      url,
+      method: init.method || "GET",
+      message: networkErr?.message || String(networkErr),
+      error: networkErr,
+    });
+    throw networkErr;
+  }
+
   if (res.status === 204) return null as unknown as T;
 
   const ct = res.headers.get("content-type") || "";
 
-  // ★ 401 → refresh(POST) 시도 후 1회 재시도
+  // ③ 401 처리: refresh 1회 후 재시도
   if (res.status === 401 && !isRefreshCall) {
     const refreshed = await refreshPOST().catch(() => null);
     if (refreshed?.user) {
       localStorage.setItem("user", JSON.stringify(refreshed.user));
       localStorage.setItem("isLoggedIn", "true");
+      const newToken =
+        refreshed?.token ??
+        refreshed?.accessToken ??
+        refreshed?.access_token ??
+        null;
+      if (newToken) localStorage.setItem("authToken", newToken);
       return apiRequest<T>(endpoint, init);
     }
     localStorage.removeItem("authToken");
     localStorage.removeItem("accessToken");
     localStorage.removeItem("user");
     localStorage.removeItem("isLoggedIn");
-    throw new Error("세션이 만료되었습니다. 다시 로그인해주세요.");
+    const e401: any = new Error("세션이 만료되었습니다. 다시 로그인해주세요.");
+    e401.status = 401;
+    throw e401;
   }
 
-  // 에러 응답 body 파싱(친구 코드 스타일)
+  // HTTP 에러 상세 로그
   if (!res.ok) {
-    const body = ct.includes("application/json")
+    const payload = ct.includes("application/json")
       ? await res.json().catch(() => null)
       : await res.text().catch(() => "");
+    console.error("[apiRequest][HTTP ERROR]", {
+      url,
+      method: init.method || "GET",
+      status: res.status,
+      statusText: res.statusText,
+      payload,
+    });
     const message =
-      (typeof body === "object" && body && (body.message || body.error)) ||
-      (typeof body === "string" && body) ||
+      (payload && (payload.message || payload.error)) ||
+      (typeof payload === "string" && payload) ||
       `HTTP ${res.status}`;
-    const err = new Error(message) as Error & { status?: number; body?: any };
+    const err: any = new Error(message);
     err.status = res.status;
-    err.body = body;
+    err.body = payload;
+    err.url = url;
     throw err;
   }
 
   if (!ct.includes("application/json")) {
     const txt = await res.text().catch(() => "");
-    if (!txt) return null as unknown as T;   // 필요하면 여기서도 null 반환
-    throw new Error(`Non-JSON response from ${endpoint}`);
+    return (txt as unknown) as T;
   }
-
   return res.json() as Promise<T>;
 }
 
-/** refresh: POST 한 가지(슬래시 유무만 백업 시도) */
+/* refresh: POST 한 가지(슬래시 유무 백업) */
 export async function refreshPOST(): Promise<any | null> {
-  // 1차: /api/auth/refresh (POST)
-  let r = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+  let r = await fetch(joinPath(API_BASE_URL, "/api/auth/refresh"), {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: "{}",
   }).catch(() => null);
 
-  // 실패 시 2차: /api/auth/refresh/ (POST)
   if (!r || !r.ok) {
-    r = await fetch(`${API_BASE_URL}/api/auth/refresh/`, {
+    r = await fetch(joinPath(API_BASE_URL, "/api/auth/refresh/"), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: "{}",
     }).catch(() => null);
   }
-
   if (!r || !r.ok) return null;
 
   const ct = r.headers.get("content-type") || "";
