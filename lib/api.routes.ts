@@ -13,11 +13,21 @@ export type EditEventDto = {
 };
 
 export type ApiOk = { success: boolean };
-export type ApplyOk = { success: boolean; applicationId: number };
+
+
+// ★ 백엔드 응답 케이스를 모두 수용 (success.id / applicationId 등)
+export type ApplyOk =
+  | { success: boolean; applicationId: number }
+  | { resultType?: string; success?: { id?: number; applicationId?: number } }
+  | { id?: number; data?: { id?: number } };
+
 export type UpdateOk = { success: boolean; eventId: number };
 
-/* ===== 내부 유틸: 여러 조합으로 시도 (404/미구현 대비) ===== */
-async function tryMany<T>(tries: Array<{ path: string; method: "PUT" | "PATCH" | "GET" | "POST" | "DELETE"; body?: unknown }>) {
+/* ===== 내부 유틸 (식당 검색 등에서만 사용) ===== */
+async function tryMany<T>(
+  tries: Array<{ path: string; method: "PUT" | "PATCH" | "GET" | "POST" | "DELETE"; body?: unknown }>
+) {
+
   let lastErr: any;
   for (const t of tries) {
     try {
@@ -27,7 +37,7 @@ async function tryMany<T>(tries: Array<{ path: string; method: "PUT" | "PATCH" |
       });
     } catch (e) {
       lastErr = e;
-      // 다음 시도
+
     }
   }
   throw lastErr;
@@ -35,34 +45,30 @@ async function tryMany<T>(tries: Array<{ path: string; method: "PUT" | "PATCH" |
 
 /* ===== 이벤트: 수정/삭제/신청/신청취소/내 이벤트 ===== */
 export const eventAPI_mutation = {
-  // PUT /api/events/{id}/edit | PUT /api/events/{id} | PATCH 조합까지 폴백
-  updateEvent: async (eventId: number, eventData: any) => {
-    try {
-      // 1차: 기존 엔드포인트
-      return await apiRequest(`/api/events/${eventId}/edit`, {
-        method: "PUT",
-        body: eventData,
-      });
-    } catch (err: any) {
-      // 404면 PATCH로 재시도
-      if (err?.status === 404) {
-        return await apiRequest(`/api/events/${eventId}`, {
-          method: "PATCH",
-          body: eventData,
-        });
-      }
-      throw err;
-    }
-  },
 
+  /** 밥약 수정: PUT /api/events/{id}/edit */
+  updateEvent: (eventId: number, eventData: EditEventDto) =>
+    apiRequest<UpdateOk>(`/api/events/${encodeURIComponent(eventId)}/edit`, {
+      method: "PUT",
+      body: JSON.stringify(eventData),
+      headers: { "Content-Type": "application/json" } as any,
+    }),
+
+  /** 밥약 삭제: DELETE /api/events/{eventId}/cancel */
   deleteEvent: (eventId: number) =>
     apiRequest<ApiOk>(`/api/events/${encodeURIComponent(eventId)}/cancel`, { method: "DELETE" }),
+
+  /** 밥약 신청: POST /api/events/{eventId}/application */
 
   applyToEvent: (eventId: number, message?: string) =>
     apiRequest<ApplyOk>(`/api/events/${encodeURIComponent(eventId)}/application`, {
       method: "POST",
       ...(message ? { body: JSON.stringify({ message }) } : {}),
+
+      headers: { "Content-Type": "application/json" } as any,
     }),
+
+  /** 밥약 신청 취소: DELETE /api/events/{eventId}/application/{applicationId}/cancel */
 
   cancelApplication: (eventId: number, applicationId: number) =>
     apiRequest<ApiOk>(
@@ -70,16 +76,21 @@ export const eventAPI_mutation = {
       { method: "DELETE" }
     ),
 
+
+  /** 내 이벤트 목록 */
   getMyEvents: () => apiRequest(`/api/events/me`),
 };
 
-/* ===== 식당 =====
-   - 명세 1순위: GET /api/restaurants?keyword=foo
-   - 보조: GET /api/restaurants/search?q=foo, GET /api/restaurants?q=foo
-   - 상세: GET /api/restaurants/{id}
-*/
+/* ===== 식당 ===== */
 export type RestaurantListItem = { id: number; name: string; address?: string | null };
-export type RestaurantDetail = { id: number; name: string; address?: string | null; tel?: string | null; category?: string | null };
+export type RestaurantDetail = {
+  id: number;
+  name: string;
+  address?: string | null;
+  tel?: string | null;
+  category?: string | null;
+};
+
 
 export const restaurantAPI = {
   search: async (keyword: string): Promise<RestaurantListItem[]> => {
@@ -125,6 +136,9 @@ export const reviewAPI = {
     return apiRequest(`/api/reviews/${encodeURIComponent(userId)}`, {
       method: "POST",
       body: JSON.stringify(review),
+
+      headers: { "Content-Type": "application/json" } as any,
+
     });
   },
 };
@@ -142,6 +156,9 @@ export const commentAPI = {
         creator_id: creatorId, // ERD snake_case
         event_id: eventId,     // ERD snake_case
       }),
+
+      headers: { "Content-Type": "application/json" } as any,
+
     }),
 
   deleteComment: (eventId: number, commentId: number) =>
