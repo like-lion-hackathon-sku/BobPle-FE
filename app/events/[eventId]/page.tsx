@@ -11,7 +11,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { MapPin, Clock, Users, Trash2 } from "lucide-react";
 
+
 import { apiRequest, eventAPI } from "@/lib/api";
+
 import { eventAPI_mutation } from "@/lib/api.routes";
 
 const DEFAULT_MAX = 4;
@@ -126,7 +128,9 @@ export default function EventDetailPage() {
   }, []);
 
   const dateLabel = useMemo(() => toDateLabel(detail.startISO), [detail.startISO]);
+
   const isApplied = myApplicationId != null && Number(myApplicationId) > 0;
+
 
   useEffect(() => {
     (async () => {
@@ -166,6 +170,7 @@ export default function EventDetailPage() {
           avatar: null,
         };
 
+
         const hasHost = host.id != null && participants.some((p) => String(p.id ?? "") === String(host.id ?? ""));
         const mergedParticipants: Participant[] = hasHost
           ? participants
@@ -179,6 +184,7 @@ export default function EventDetailPage() {
           if (p?.id && (p?.name || p?.nickname)) nicknameMapFromRow.set(String(p.id), p.name ?? p.nickname!);
         }
         if (me?.id && (me?.nickname || me?.name)) nicknameMapFromRow.set(String(me.id), me.nickname ?? me.name);
+
 
         setDetail({
           id: row.id,
@@ -195,6 +201,7 @@ export default function EventDetailPage() {
           host,
           participants: mergedParticipants,
         });
+
 
         const meFromServer = Number(row.me?.id ?? row.meId ?? row.userId ?? NaN);
         const meFromLS = Number(me?.id ?? NaN);
@@ -226,6 +233,8 @@ export default function EventDetailPage() {
       }
     })();
   }, [eventId, me]);
+
+
 
   async function reloadComments(idForComments: string, nicknameMap?: Map<string, string>) {
     try {
@@ -270,6 +279,7 @@ export default function EventDetailPage() {
     }
   }
 
+  // 댓글 작성 (camelCase 우선, 실패 시 snake_case 재시도)
   async function createComment() {
     if (!newComment.trim() || !detail.id) return;
     setPosting(true);
@@ -328,6 +338,7 @@ export default function EventDetailPage() {
       setDeletingId(null);
     }
   }
+
 
   /* ====== 참여하기 / 신청 취소 (낙관적 토글) ====== */
   const applyToEvent = async () => {
@@ -393,6 +404,7 @@ export default function EventDetailPage() {
         participants: prevParts,
         currentParticipants: prevCount,
       }));
+
       alert(e?.message || "신청에 실패했습니다.");
     } finally {
       setBusy(false);
@@ -400,6 +412,7 @@ export default function EventDetailPage() {
   };
 
   const cancelApplication = async () => {
+
     const appIdNum = Number(myApplicationId);
     if (!detail.id || !Number.isFinite(appIdNum) || appIdNum <= 0 || busy) return;
 
@@ -430,6 +443,7 @@ export default function EventDetailPage() {
         participants: prevParts,
         currentParticipants: prevCount,
       }));
+
       alert(e?.message || "신청 취소에 실패했습니다.");
     } finally {
       setBusy(false);
@@ -472,7 +486,9 @@ export default function EventDetailPage() {
               </div>
               <div className="flex items-center text-sm text-muted-foreground">
                 <Users className="w-4 h-4 mr-1" />
+
                 {detail.currentParticipants ?? 0}/{detail.maxParticipants ?? DEFAULT_MAX}
+
               </div>
             </div>
           </CardHeader>
@@ -526,12 +542,14 @@ export default function EventDetailPage() {
                     삭제
                   </Button>
                 </>
+
               ) : isApplied ? (
                 <Button variant="outline" className="w-full" disabled={busy} onClick={cancelApplication}>
                   신청 취소
                 </Button>
               ) : (
                 <Button className="w-full" disabled={busy} onClick={applyToEvent}>
+
                   참여하기
                 </Button>
               )}
@@ -623,7 +641,9 @@ export default function EventDetailPage() {
                   </div>
                 );
               })}
+
               {comments.length === 0 && <div className="text-sm text-muted-foreground">아직 댓글이 없습니다.</div>}
+
             </div>
           </CardContent>
         </Card>
