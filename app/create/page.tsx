@@ -1,7 +1,7 @@
 // app/create/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,50 +11,139 @@ import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Search } from "lucide-react";
 import { eventAPI } from "@/lib/api";
 
+/** 상수 */
+const DRAFT_KEY = "createEventDraft_v1";
+
+/** 에러 객체에서 사용자 메시지 뽑기 */
+function getErrorMessage(err: any): string {
+  if (!err) return "알 수 없는 오류가 발생했습니다.";
+  if (typeof err === "string") return err;
+  if (err?.error?.reason) return String(err.error.reason);
+  if (err?.reason) return String(err.reason);
+  if (typeof err?.message === "string" && err.message) return err.message;
+  if (typeof err?.detail === "string") return err.detail;
+  try { return JSON.stringify(err); } catch { return String(err); }
+}
+
+/** 한국시간(+09:00) ISO 변환 */
+function toISO(date: string, time: string) {
+  return new Date(`${date}T${time}:00+09:00`).toISOString();
+}
+
 export default function CreateEventPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // 쿼리 파라미터(id, name, address 우선)
+  // 식당 선택 쿼리 (검색 페이지에서 돌아올 때 세팅됨)
   const qpId = searchParams.get("id") ?? searchParams.get("restaurantId") ?? "";
   const qpName = searchParams.get("name") ?? searchParams.get("restaurant") ?? "";
   const qpAddress = searchParams.get("address") ?? searchParams.get("location") ?? "";
 
+  /** ---- 상태 ---- */
   const [formData, setFormData] = useState({
     title: "",
     content: "",
-    restaurant: qpName,
-    location: qpAddress,
+    restaurant: "",
+    location: "",
   });
-
   const [startDate, setStartDate] = useState("");
   const [startTime, setStartTime] = useState("");
   const [endDate, setEndDate] = useState("");
   const [endTime, setEndTime] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const loadedRef = useRef(false); // draft 중복 적용 방지
 
+  /** 1) 최초 마운트 시 draft 복원 */
   useEffect(() => {
+    if (typeof window === "undefined" || loadedRef.current) return;
+    loadedRef.current = true;
+
+    try {
+      const saved = localStorage.getItem(DRAFT_KEY);
+      if (saved) {
+        const d = JSON.parse(saved);
+        setFormData({
+          title: d.title ?? "",
+          content: d.content ?? "",
+          restaurant: d.restaurant ?? "",
+          location: d.location ?? "",
+        });
+        setStartDate(d.startDate ?? "");
+        setStartTime(d.startTime ?? "");
+        setEndDate(d.endDate ?? "");
+        setEndTime(d.endTime ?? "");
+      }
+    } catch {}
+  }, []);
+
+  /** 2) 식당 선택 쿼리가 들어오면 기존 draft에 "병합" */
+  useEffect(() => {
+    if (!qpId && !qpName && !qpAddress) return;
     setFormData((prev) => ({
       ...prev,
-      restaurant: qpName,
-      location: qpAddress,
+      // 사용자가 기존에 적어둔 값은 유지하되, 쿼리가 오면 식당/주소만 갱신
+      restaurant: qpName || prev.restaurant,
+      location: qpAddress || prev.location,
     }));
   }, [qpId, qpName, qpAddress]);
 
-  // 한국시간(+09:00) ISO 변환
-  function toISO(date: string, time: string) {
-    return new Date(`${date}T${time}:00+09:00`).toISOString();
+  /** 3) 변경될 때마다 draft 자동 저장 (300ms 디바운스) */
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem(
+          DRAFT_KEY,
+          JSON.stringify({
+            ...formData,
+            startDate,
+            startTime,
+            endDate,
+            endTime,
+          })
+        );
+      } catch {}
+    }, 300);
+    return () => clearTimeout(t);
+  }, [formData, startDate, startTime, endDate, endTime]);
+
+  /** 돋보기(식당 검색) 진입 전에 즉시 저장 */
+  const goRestaurantSearch = () => {
+    try {
+      localStorage.setItem(
+        DRAFT_KEY,
+        JSON.stringify({
+          ...formData,
+          startDate,
+          startTime,
+          endDate,
+          endTime,
+        })
+      );
+    } catch {}
+    router.push("/restaurants");
+  };
+
+  /** 프리체크: 날짜/시간 */
+  function validateDateRange() {
+    if (!startDate || !startTime || !endDate || !endTime) {
+      return "시작/종료 일시를 모두 선택해주세요.";
+    }
+    const now = Date.now();
+    const start = new Date(`${startDate}T${startTime}:00+09:00`).getTime();
+    const end = new Date(`${endDate}T${endTime}:00+09:00`).getTime();
+
+    if (start <= now) return "시작 시간은 현재보다 미래에 가능합니다.";
+    if (end <= start) return "종료 시간은 시작 시간 이후여야 합니다.";
+    return "";
   }
 
-  // 폼 제출
+  // 제출
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!startDate || !startTime || !endDate || !endTime) {
-      setError("시작/종료 일시를 모두 선택해주세요.");
-      return;
-    }
+    const precheck = validateDateRange();
+    if (precheck) { setError(precheck); return; }
 
     const restaurantId = Number(qpId || 0);
     if (!restaurantId) {
@@ -74,17 +163,30 @@ export default function CreateEventPage() {
         endAt: toISO(endDate, endTime),
       };
 
-      const response: any = await eventAPI.createEvent(payload);
+      const res: any = await eventAPI.createEvent(payload);
 
-      // 생성 후 이동(응답에 id 있으면 상세로 이동)
-      const newId = response?.id ?? response?.data?.id;
+      if (res?.resultType === "FAIL" || res?.success === false || res?.error) {
+        setError(getErrorMessage(res));
+        return;
+      }
+
+      // 성공 → draft 삭제
+      try { localStorage.removeItem(DRAFT_KEY); } catch {}
+
+      const newId = res?.id ?? res?.data?.id;
       router.push(newId ? `/events/${newId}` : "/");
     } catch (err: any) {
       console.error("밥약 생성 실패:", err);
-      setError(err?.message || "밥약 생성에 실패했습니다.");
+      setError(getErrorMessage(err));
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  /** 취소 시에도 draft 정리(선택) */
+  const handleCancel = () => {
+    try { localStorage.removeItem(DRAFT_KEY); } catch {}
+    router.back();
   };
 
   return (
@@ -110,9 +212,7 @@ export default function CreateEventPage() {
 
           {/* 기본 정보 */}
           <Card>
-            <CardHeader>
-              <CardTitle>기본 정보</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle>기본 정보</CardTitle></CardHeader>
             <CardContent className="space-y-4">
               <div>
                 <Label htmlFor="title">제목 *</Label>
@@ -120,7 +220,7 @@ export default function CreateEventPage() {
                   id="title"
                   placeholder="예: 강남역 맛집 탐방"
                   value={formData.title}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, title: e.target.value }))}
+                  onChange={(e) => setFormData((p) => ({ ...p, title: e.target.value }))}
                   required
                 />
               </div>
@@ -131,7 +231,7 @@ export default function CreateEventPage() {
                   id="content"
                   placeholder="어떤 식사 모임인지 자세히 설명해주세요"
                   value={formData.content}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, content: e.target.value }))}
+                  onChange={(e) => setFormData((p) => ({ ...p, content: e.target.value }))}
                   rows={3}
                 />
               </div>
@@ -143,10 +243,10 @@ export default function CreateEventPage() {
                     id="restaurant"
                     placeholder="예: 라 트라토리아"
                     value={formData.restaurant}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, restaurant: e.target.value }))}
+                    onChange={(e) => setFormData((p) => ({ ...p, restaurant: e.target.value }))}
                     className="flex-1"
                   />
-                  <Button type="button" variant="outline" onClick={() => router.push("/restaurants")}>
+                  <Button type="button" variant="outline" onClick={goRestaurantSearch}>
                     <Search className="w-4 h-4" />
                   </Button>
                 </div>
@@ -163,7 +263,7 @@ export default function CreateEventPage() {
                   id="location"
                   placeholder="예: 강남역 2번 출구"
                   value={formData.location}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, location: e.target.value }))}
+                  onChange={(e) => setFormData((p) => ({ ...p, location: e.target.value }))}
                 />
               </div>
             </CardContent>
@@ -171,30 +271,22 @@ export default function CreateEventPage() {
 
           {/* 날짜/시간 */}
           <Card>
-            <CardHeader>
-              <CardTitle>날짜 및 시간</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle>날짜 및 시간</CardTitle></CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label htmlFor="startDate">시작 날짜 *</Label>
                   <Input
-                    id="startDate"
-                    type="date"
-                    value={startDate}
+                    id="startDate" type="date" value={startDate}
                     onChange={(e) => setStartDate(e.target.value)}
-                    min={new Date().toISOString().split("T")[0]}
-                    required
+                    min={new Date().toISOString().split("T")[0]} required
                   />
                 </div>
                 <div>
                   <Label htmlFor="startTime">시작 시간 *</Label>
                   <Input
-                    id="startTime"
-                    type="time"
-                    value={startTime}
-                    onChange={(e) => setStartTime(e.target.value)}
-                    required
+                    id="startTime" type="time" value={startTime}
+                    onChange={(e) => setStartTime(e.target.value)} required
                   />
                 </div>
               </div>
@@ -203,22 +295,16 @@ export default function CreateEventPage() {
                 <div>
                   <Label htmlFor="endDate">종료 날짜 *</Label>
                   <Input
-                    id="endDate"
-                    type="date"
-                    value={endDate}
+                    id="endDate" type="date" value={endDate}
                     onChange={(e) => setEndDate(e.target.value)}
-                    min={startDate || new Date().toISOString().split("T")[0]}
-                    required
+                    min={startDate || new Date().toISOString().split("T")[0]} required
                   />
                 </div>
                 <div>
                   <Label htmlFor="endTime">종료 시간 *</Label>
                   <Input
-                    id="endTime"
-                    type="time"
-                    value={endTime}
-                    onChange={(e) => setEndTime(e.target.value)}
-                    required
+                    id="endTime" type="time" value={endTime}
+                    onChange={(e) => setEndTime(e.target.value)} required
                   />
                 </div>
               </div>
@@ -236,25 +322,12 @@ export default function CreateEventPage() {
 
           {/* 버튼 */}
           <div className="flex gap-4">
-            <Button
-              type="button"
-              variant="outline"
-              className="flex-1 bg-transparent"
-              onClick={() => router.back()}
-            >
+            <Button type="button" variant="outline" className="flex-1 bg-transparent" onClick={handleCancel}>
               취소
             </Button>
             <Button
-              type="submit"
-              className="flex-1"
-              disabled={
-                isSubmitting ||
-                !formData.title ||
-                !startDate ||
-                !startTime ||
-                !endDate ||
-                !endTime
-              }
+              type="submit" className="flex-1"
+              disabled={isSubmitting || !formData.title || !startDate || !startTime || !endDate || !endTime}
             >
               {isSubmitting ? "생성 중..." : "밥약 만들기"}
             </Button>

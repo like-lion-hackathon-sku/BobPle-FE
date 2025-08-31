@@ -176,7 +176,7 @@ export default function EventDetailPage() {
           ? participants
           : [{ id: host.id, name: host.name, nickname: host.name, avatar: host.avatar }, ...participants];
 
-        const displayCount = row.participantsCount ?? Math.max(1, mergedParticipants.length);
+        const displayCount = mergedParticipants.length;
 
         const nicknameMapFromRow = new Map<string, string>();
         if (host.id && host.name) nicknameMapFromRow.set(String(host.id), host.name);
@@ -522,25 +522,27 @@ export default function EventDetailPage() {
                     수정
                   </Button>
                   <Button
-                    variant="destructive"
-                    className="flex-1"
-                    disabled={busy}
-                    onClick={async () => {
-                      if (!detail.id) return;
-                      if (!confirm("이 밥약을 삭제(취소)할까요?")) return;
-                      try {
-                        setBusy(true);
-                        await apiRequest(`/api/events/${detail.id}`, { method: "DELETE" });
-                        router.back();
-                      } catch (e: any) {
-                        alert(e?.message || "삭제에 실패했습니다.");
-                      } finally {
-                        setBusy(false);
-                      }
-                    }}
-                  >
-                    삭제
-                  </Button>
+  variant="destructive"
+  className="flex-1"
+  disabled={busy}
+  onClick={async () => {
+    if (!detail.id) return;
+    if (!confirm("이 밥약을 삭제(취소)할까요?")) return;
+    try {
+      setBusy(true);
+      await apiRequest(`/api/events/${detail.id}`, { method: "DELETE" });
+      // 이전: router.back();
+      router.replace("/");           // ← 메인으로
+      // 필요하면: router.replace("/events");
+    } catch (e: any) {
+      alert(e?.message || "삭제에 실패했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }}
+>
+  삭제
+</Button>
                 </>
 
               ) : isApplied ? (
