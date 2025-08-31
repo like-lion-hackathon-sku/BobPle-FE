@@ -98,18 +98,21 @@ export const authAPI = {
   },
 
   updateProfile: async (profileData: { grade: any; gender: any; nickname: string }) => {
-    const grade = toWireGrade(profileData.grade);
-    const gender = toWireGender(profileData.gender);
-    const nickname = profileData.nickname?.trim();
-    if (!grade || !gender || !nickname) {
-      throw new Error("학년, 성별, 닉네임은 모두 입력해야 합니다.");
-    }
-    const payload = { grade, gender, nickname };
-    return apiRequest("/api/auth/profile/", {
-      method: "PUT",
-      body: JSON.stringify(payload),
-    });
-  },
+  const grade = toWireGrade(profileData.grade);
+  const gender = toWireGender(profileData.gender);
+  const nickname = profileData.nickname?.trim();
+  if (!grade || !gender || !nickname) {
+    throw new Error("학년, 성별, 닉네임은 모두 입력해야 합니다.");
+  }
+  const payload = { grade, gender, nickname };
+
+  // 🔧 여기 경로 끝에 / 붙이기
+  return apiRequest("/api/auth/profile/", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+},
+
 };
 
 /* ─────────────────────────────────────────────────────────────

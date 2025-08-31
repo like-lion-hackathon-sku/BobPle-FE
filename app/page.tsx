@@ -207,31 +207,35 @@ export default function HomePage() {
 
       // 최종 병합 + “호스트는 최소 1명” 규칙
       const merged: EventItem[] = base.map(ev => {
-        const creatorName =
-          (ev.host.name && ev.host.name !== "호스트"
-            ? ev.host.name
-            : (typeof ev.creatorId === "number" ? nickCache.get(ev.creatorId) : undefined)) ?? "호스트";
+  const creatorName =
+    (ev.host.name && ev.host.name !== "호스트"
+      ? ev.host.name
+      : (typeof ev.creatorId === "number" ? nickCache.get(ev.creatorId) : undefined)) ?? "호스트";
 
-        const restaurantName =
-          ev.restaurantName ??
-          (typeof ev.restaurantId === "number" ? restCache.get(ev.restaurantId) : undefined) ??
-          (ev.restaurantId ? `식당 #${ev.restaurantId}` : "장소 미정");
+  const restaurantName =
+    ev.restaurantName ??
+    (typeof ev.restaurantId === "number" ? restCache.get(ev.restaurantId) : undefined) ??
+    (ev.restaurantId ? `식당 #${ev.restaurantId}` : "장소 미정");
 
-        // 서버가 participantsCount를 안 주면 0으로 보이는데,
-        // “호스트는 무조건 참여자” 규칙으로 최소 1명 보장
-        const displayCount = Math.max(1, ev.currentParticipants ?? 0);
+  // ✅ 상세 페이지와 동일 규칙:
+  //    서버 participantsCount 가 "호스트 제외" 기준일 수 있으니 호스트(creator) 1명 더해서 표시.
+  //    값이 없으면 최소 1명.
+  const displayCount =
+    ev.currentParticipants != null
+      ? Math.max(1, Number(ev.currentParticipants) + (ev.creatorId ? 1 : 0))
+      : 1;
 
-        return {
-          ...ev,
-          host: { ...ev.host, name: creatorName },
-          restaurantName,
-          currentParticipants: displayCount,
-          maxParticipants: ev.maxParticipants ?? DEFAULT_MAX,
-          dateLabel: ev.dateLabel ?? toDateLabel(ev.startISO),
-          startHHMM: ev.startHHMM ?? toHHMM(ev.startISO),
-          endHHMM: ev.endHHMM ?? toHHMM(ev.endISO),
-        };
-      });
+  return {
+    ...ev,
+    host: { ...ev.host, name: creatorName },
+    restaurantName,
+    currentParticipants: displayCount,                // ← 여기!
+    maxParticipants: ev.maxParticipants ?? DEFAULT_MAX,
+    dateLabel: ev.dateLabel ?? toDateLabel(ev.startISO),
+    startHHMM: ev.startHHMM ?? toHHMM(ev.startISO),
+    endHHMM: ev.endHHMM ?? toHHMM(ev.endISO),
+  };
+});
 
       // 프론트 검색(서버 search 미지원 대비)
       const qnorm = q.trim().toLowerCase();
