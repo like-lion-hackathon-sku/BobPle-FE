@@ -261,7 +261,7 @@ export default function ApplicationsPage() {
                           </div>
                         </div>
                         {application.status === "approved" && (
-                          <Button size="sm" variant="ghost" onClick={() => router.push(`/chat/${params.eventId}`)}>
+                          <Button size="sm" variant="ghost" onClick={() => router.push(`/chats/${params.eventId}`)}>
                             <MessageCircle className="w-4 h-4" />
                           </Button>
                         )}
