@@ -12,7 +12,7 @@ import { ArrowLeft, Star, MapPin, Calendar, Users, Flag } from "lucide-react";
 
 import { apiRequest, userAPI, reviewAPI } from "@/lib/api";
 
-// ── 화면용 타입 ──────────────────────────────────────────────
+/* ── 화면용 타입 ────────────────────────────────────────────── */
 type UserProfile = {
   id: number | string;
   name: string;
@@ -42,7 +42,7 @@ type ReceivedReview = {
   date: string;
 };
 
-// ── 매핑 헬퍼 ───────────────────────────────────────────────
+/* ── 매핑 헬퍼 ─────────────────────────────────────────────── */
 function mapUserFromApi(raw: any): UserProfile {
   return {
     id: raw?.id ?? raw?._id ?? "user",
@@ -57,22 +57,62 @@ function mapUserFromApi(raw: any): UserProfile {
     hostedMeals: raw?.hostedMeals ?? raw?.hosted_meals ?? null,
   };
 }
+
 function mapEventFromApi(raw: any): RecentEvent {
-  const dt = raw?.start_at ?? raw?.date ?? raw?.created_at ?? new Date().toISOString();
-  const done = Boolean(raw?.is_completed ?? raw?.completed);
+  const start = raw?.start_at ?? raw?.startAt ?? raw?.date ?? raw?.created_at;
+  const end   = raw?.end_at   ?? raw?.endAt   ?? raw?.ended_at;
+  const now = Date.now();
+
+  let status: "upcoming" | "completed" = "upcoming";
+
+  // 서버 완료 플래그가 있으면 우선 반영
+  if (raw?.is_completed === true || raw?.completed === true) {
+    status = "completed";
+  } else {
+    // 시간 기반 보조 판정
+    try {
+      if (end && new Date(end).getTime() < now) status = "completed";
+      else if (!end && start && new Date(start).getTime() < now) status = "completed";
+    } catch {
+      status = "upcoming";
+    }
+  }
+
   return {
     id: raw?.id ?? raw?._id ?? Math.random().toString(36).slice(2),
     title: raw?.title ?? raw?.name ?? "제목 없음",
-    date: typeof dt === "string" ? dt : new Date().toISOString(),
-    status: done ? "completed" : "upcoming",
-    participants: raw?.current_participants ?? raw?.participants ?? null,
+    date: typeof start === "string" ? start : new Date().toISOString(),
+    status,
+    participants:
+      raw?.current_participants ??
+      raw?.participantsCount ??
+      raw?.participants_count ??
+      raw?.participants ??
+      null,
   };
 }
+
 function mapReviewFromApi(raw: any): ReceivedReview {
-  const dt = raw?.created_at ?? raw?.date ?? new Date().toISOString();
+  // ERD 최소 필드(score, created_at)만 있어도 안전 동작
+  const dt = raw?.created_at ?? raw?.createdAt ?? raw?.date ?? new Date().toISOString();
+
   const reviewerName =
-    raw?.reviewer?.nickname ?? raw?.reviewer?.name ?? raw?.fromUser?.nickname ?? "익명";
-  const reviewerAvatar = raw?.reviewer?.avatar ?? raw?.reviewer?.profile_img ?? raw?.fromUser?.avatar ?? null;
+    raw?.reviewer?.nickname ??
+    raw?.reviewer?.name ??
+    raw?.fromUser?.nickname ??
+    raw?.fromUser?.name ??
+    raw?.user?.nickname ??
+    raw?.user?.name ??
+    "익명"; // 이름 정보가 전혀 없을 때만 익명
+
+  const reviewerAvatar =
+    raw?.reviewer?.avatar ??
+    raw?.reviewer?.profile_img ??
+    raw?.fromUser?.avatar ??
+    raw?.fromUser?.profile_img ??
+    raw?.user?.avatar ??
+    null;
+
   return {
     id: raw?.id ?? raw?._id ?? Math.random().toString(36).slice(2),
     reviewer: { name: reviewerName, avatar: reviewerAvatar },
@@ -85,17 +125,22 @@ function mapReviewFromApi(raw: any): ReceivedReview {
 function asArray(data: any): any[] {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.events)) return data.events;
+  if (Array.isArray(data?.data?.items)) return data.data.items;
+  if (Array.isArray(data?.items)) return data.items;
   if (Array.isArray(data?.data)) return data.data;
   if (Array.isArray(data?.results)) return data.results;
   if (Array.isArray(data?.success?.lists)) return data.success.lists;
   return [];
 }
 
-// ── 페이지 ─────────────────────────────────────────────────
+/* ── 페이지 ───────────────────────────────────────────────── */
 export default function UserProfilePage() {
   const router = useRouter();
   const params = useParams();
-  const uid = String(params?.userId ?? "").trim();
+  const uidRaw = String(params?.userId ?? "").trim();
+
+  const uidNum = Number(uidRaw);
+  const uidArg: number | string = Number.isFinite(uidNum) ? uidNum : uidRaw;
 
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -106,39 +151,56 @@ export default function UserProfilePage() {
 
   useEffect(() => {
     let canceled = false;
+
     (async () => {
       try {
         setErr(null);
         setLoading(true);
 
-        // ① 사용자 기본 정보
-        const user = await userAPI.getUserProfile(Number(uid)).catch(() => null);
+        /* ① 사용자 기본 정보 */
+        const user = await userAPI
+          .getUserProfile(Number.isFinite(uidNum) ? uidNum : Number(uidRaw))
+          .catch(() => null);
         const mapped = user ? mapUserFromApi(user) : null;
         if (!canceled) setProfile(mapped);
 
-        // ② 최근 밥약 (userId 파라미터 직접 쿼리)
+        /* ② 최근 밥약 */
         const evRes = await apiRequest(
-          `/api/events?userId=${encodeURIComponent(uid)}&page=1&limit=10`
+          `/api/events?userId=${encodeURIComponent(String(uidRaw))}&page=1&limit=10`
         ).catch(() => null);
-        if (!canceled) setRecentEvents(asArray(evRes).slice(0, 5).map(mapEventFromApi));
+        if (!canceled)
+          setRecentEvents(asArray(evRes).slice(0, 5).map(mapEventFromApi));
 
-        // ③ 받은 리뷰
-        const userReviews = await reviewAPI.getUserReviews(Number(uid), 1, 10).catch(() => ({ data: [] }));
-        if (!canceled) setReviews(asArray(userReviews).slice(0, 5).map(mapReviewFromApi));
+        /* ③ 받은 리뷰 */
+        const userReviews = await reviewAPI
+          .getUserReviews(uidArg as any, 1, 10)
+          .catch(() => ({ data: [] }));
+        if (!canceled)
+          setReviews(asArray(userReviews).slice(0, 5).map(mapReviewFromApi));
       } catch (e: any) {
         if (!canceled) setErr(e?.message || "프로필을 불러오지 못했습니다.");
       } finally {
         if (!canceled) setLoading(false);
       }
     })();
-    return () => { canceled = true; };
-  }, [uid]);
+
+    return () => {
+      canceled = true;
+    };
+  }, [uidRaw]);
 
   const joined = useMemo(() => {
     if (!profile?.joinDate) return "-";
     try {
-      return new Date(profile.joinDate).toLocaleDateString("ko-KR", { year: "numeric", month: "long" }) + " 가입";
-    } catch { return "-"; }
+      return (
+        new Date(profile.joinDate).toLocaleDateString("ko-KR", {
+          year: "numeric",
+          month: "long",
+        }) + " 가입"
+      );
+    } catch {
+      return "-";
+    }
   }, [profile?.joinDate]);
 
   if (loading) {
@@ -171,9 +233,9 @@ export default function UserProfilePage() {
       </header>
 
       <div className="container mx-auto px-4 py-6 max-w-4xl">
+        {/* 프로필 카드 (상태/통계/소개 유지) */}
         <Card className="mb-6">
           <CardContent className="pt-6">
-            {/* 에러 배너 */}
             {err && (
               <div className="mb-4 p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
                 {err}
@@ -189,7 +251,9 @@ export default function UserProfilePage() {
               </Avatar>
 
               <div className="flex-1 text-center md:text-left">
-                <h2 className="text-2xl font-bold mb-2">{profile?.name ?? "이름 없음"}</h2>
+                <h2 className="text-2xl font-bold mb-2">
+                  {profile?.name ?? "이름 없음"}
+                </h2>
 
                 <div className="flex items-center justify-center md:justify-start space-x-4 text-sm text-muted-foreground mb-3">
                   <div className="flex items-center">
@@ -206,24 +270,36 @@ export default function UserProfilePage() {
                   <div className="text-center">
                     <div className="flex items-center justify-center space-x-1">
                       <Star className="w-4 h-4 fill-current text-yellow-500" />
-                      <span className="font-semibold">{profile?.rating ?? "-"}</span>
+                      <span className="font-semibold">
+                        {profile?.rating ?? "-"}
+                      </span>
                     </div>
                     <span className="text-xs text-muted-foreground">
                       {(profile?.reviewCount ?? reviews.length)}개 리뷰
                     </span>
                   </div>
                   <div className="text-center">
-                    <div className="font-semibold">{profile?.completedMeals ?? 0}</div>
-                    <span className="text-xs text-muted-foreground">완료한 밥약</span>
+                    <div className="font-semibold">
+                      {profile?.completedMeals ?? 0}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      완료한 밥약
+                    </span>
                   </div>
                   <div className="text-center">
-                    <div className="font-semibold">{profile?.hostedMeals ?? 0}</div>
-                    <span className="text-xs text-muted-foreground">주최한 밥약</span>
+                    <div className="font-semibold">
+                      {profile?.hostedMeals ?? 0}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      주최한 밥약
+                    </span>
                   </div>
                 </div>
 
                 {profile?.bio && (
-                  <p className="text-muted-foreground leading-relaxed mb-2">{profile.bio}</p>
+                  <p className="text-muted-foreground leading-relaxed mb-2">
+                    {profile.bio}
+                  </p>
                 )}
               </div>
             </div>
@@ -237,6 +313,7 @@ export default function UserProfilePage() {
             <TabsTrigger value="reviews">받은 리뷰</TabsTrigger>
           </TabsList>
 
+          {/* 최근 밥약 */}
           <TabsContent value="events" className="space-y-4">
             {recentEvents.length === 0 ? (
               <div className="text-sm text-muted-foreground">최근 밥약이 없습니다.</div>
@@ -267,6 +344,7 @@ export default function UserProfilePage() {
             )}
           </TabsContent>
 
+          {/* 받은 리뷰 */}
           <TabsContent value="reviews" className="space-y-4">
             {reviews.length === 0 ? (
               <div className="text-sm text-muted-foreground">받은 리뷰가 없습니다.</div>
@@ -277,7 +355,7 @@ export default function UserProfilePage() {
                     <div className="flex items-start space-x-3">
                       <Avatar className="w-10 h-10">
                         <AvatarImage src={rv.reviewer.avatar || "/placeholder.svg"} />
-                        <AvatarFallback>{rv.reviewer.name[0]}</AvatarFallback>
+                        <AvatarFallback>{rv.reviewer.name?.[0] ?? "U"}</AvatarFallback>
                       </Avatar>
                       <div className="flex-1">
                         <div className="flex items-center space-x-2 mb-2">
@@ -286,7 +364,11 @@ export default function UserProfilePage() {
                             {[...Array(5)].map((_, i) => (
                               <Star
                                 key={i}
-                                className={`w-3 h-3 ${i < (rv.rating || 0) ? "fill-current text-yellow-500" : "text-gray-300"}`}
+                                className={`w-3 h-3 ${
+                                  i < (rv.rating || 0)
+                                    ? "fill-current text-yellow-500"
+                                    : "text-gray-300"
+                                }`}
                               />
                             ))}
                           </div>
@@ -294,7 +376,9 @@ export default function UserProfilePage() {
                             {new Date(rv.date).toLocaleDateString("ko-KR")}
                           </span>
                         </div>
-                        {rv.comment && <p className="text-sm text-muted-foreground">{rv.comment}</p>}
+                        {rv.comment && (
+                          <p className="text-sm text-muted-foreground">{rv.comment}</p>
+                        )}
                       </div>
                     </div>
                   </CardContent>
