@@ -11,9 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { MapPin, Clock, Users, Trash2 } from "lucide-react";
 
-
 import { apiRequest, eventAPI } from "@/lib/api";
-
 import { eventAPI_mutation } from "@/lib/api.routes";
 
 const DEFAULT_MAX = 4;
@@ -66,18 +64,28 @@ const toDateLabel = (iso?: string | null) => {
   });
 };
 
-async function fetchRestaurantById(restaurantId: number): Promise<{ name?: string | null; address?: string | null }> {
+async function fetchRestaurantById(
+  restaurantId: number
+): Promise<{ name?: string | null; address?: string | null }> {
   try {
     const r = await apiRequest(`/api/restaurants/${restaurantId}`);
     const d = r?.data ?? r;
-    if (d) return { name: d.name ?? d.restaurantName ?? null, address: d.address ?? d.roadAddress ?? null };
+    if (d)
+      return {
+        name: d.name ?? d.restaurantName ?? null,
+        address: d.address ?? d.roadAddress ?? null,
+      };
   } catch {}
   try {
     const r = await apiRequest(`/api/restaurants?q=${encodeURIComponent(String(restaurantId))}`);
     const d = r?.data ?? r;
     const list: any[] = Array.isArray(d?.items) ? d.items : Array.isArray(d) ? d : [];
     const hit = list.find((x) => Number(x.id) === Number(restaurantId));
-    if (hit) return { name: hit.name ?? hit.restaurantName ?? null, address: hit.address ?? hit.roadAddress ?? null };
+    if (hit)
+      return {
+        name: hit.name ?? hit.restaurantName ?? null,
+        address: hit.address ?? hit.roadAddress ?? null,
+      };
   } catch {}
   return { name: null, address: null };
 }
@@ -131,6 +139,19 @@ export default function EventDetailPage() {
 
   const isApplied = myApplicationId != null && Number(myApplicationId) > 0;
 
+  /* ─────────────────────────────────────────────
+   * 프로필 이동 유틸 (나 → /profile, 타인 → /profile/:id)
+   * ──────────────────────────────────────────── */
+  const goProfile = (userId?: number | string) => {
+    if (userId == null) return; // id 없으면 무시
+    const my = Number(meId);
+    const target = Number(userId);
+    if (Number.isFinite(my) && Number.isFinite(target) && my === target) {
+      router.push("/profile");
+    } else {
+      router.push(`/profile/${encodeURIComponent(String(userId))}`);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -170,7 +191,6 @@ export default function EventDetailPage() {
           avatar: null,
         };
 
-
         const hasHost = host.id != null && participants.some((p) => String(p.id ?? "") === String(host.id ?? ""));
         const mergedParticipants: Participant[] = hasHost
           ? participants
@@ -184,7 +204,6 @@ export default function EventDetailPage() {
           if (p?.id && (p?.name || p?.nickname)) nicknameMapFromRow.set(String(p.id), p.name ?? p.nickname!);
         }
         if (me?.id && (me?.nickname || me?.name)) nicknameMapFromRow.set(String(me.id), me.nickname ?? me.name);
-
 
         setDetail({
           id: row.id,
@@ -202,7 +221,6 @@ export default function EventDetailPage() {
           participants: mergedParticipants,
         });
 
-
         const meFromServer = Number(row.me?.id ?? row.meId ?? row.userId ?? NaN);
         const meFromLS = Number(me?.id ?? NaN);
         const myId = Number.isFinite(meFromServer) ? meFromServer : Number.isFinite(meFromLS) ? meFromLS : null;
@@ -211,11 +229,9 @@ export default function EventDetailPage() {
         const hostId = Number(row.creatorId ?? row.creator_id ?? row.hostId ?? NaN);
         setIsHost(myId != null && Number.isFinite(hostId) && hostId === myId);
 
-        // 서버가 주는 신청ID
         const appId = Number(row.myApplicationId ?? row.my_application_id ?? NaN);
         setMyApplicationId(Number.isFinite(appId) && appId > 0 ? appId : null);
 
-        // ★ 폴백: 서버가 아직 안 줄 때 로컬 저장본 사용
         if ((!Number.isFinite(appId) || !(appId > 0)) && typeof window !== "undefined") {
           const saved = Number(localStorage.getItem(`appId:${row.id}`) ?? NaN);
           if (Number.isFinite(saved) && saved > 0) {
@@ -234,8 +250,6 @@ export default function EventDetailPage() {
     })();
   }, [eventId, me]);
 
-
-
   async function reloadComments(idForComments: string, nicknameMap?: Map<string, string>) {
     try {
       const r: any = await apiRequest(`/api/events/${encodeURIComponent(idForComments)}/comments`);
@@ -243,25 +257,43 @@ export default function EventDetailPage() {
 
       const mapped: CommentItem[] = rawList.map((c: any) => {
         const uid =
-          c.creatorId ?? c.creator_id ??
-          c.author?.id ?? c.user?.id ?? c.users?.id ?? undefined;
+          c.creatorId ??
+          c.creator_id ??
+          c.author?.id ??
+          c.user?.id ??
+          c.users?.id ??
+          undefined;
 
         const payloadName =
-          c.nickname ?? c.nickName ??
-          c.userNickname ?? c.user_nickname ??
-          c.userName ?? c.user_name ?? null;
+          c.nickname ??
+          c.nickName ??
+          c.userNickname ??
+          c.user_nickname ??
+          c.userName ??
+          c.user_name ??
+          null;
 
         const relationName =
-          c.user?.nickname ?? c.users?.nickname ??
-          c.creator?.nickname ?? c.author?.nickname ??
-          c.user?.name ?? c.users?.name ??
-          c.creator?.name ?? c.author?.name ?? null;
+          c.user?.nickname ??
+          c.users?.nickname ??
+          c.creator?.nickname ??
+          c.author?.nickname ??
+          c.user?.name ??
+          c.users?.name ??
+          c.creator?.name ??
+          c.author?.name ??
+          null;
 
         const fromMap = uid != null ? nicknameMap?.get(String(uid)) : undefined;
         const displayName = (payloadName || relationName || fromMap || "사용자") as string;
 
         const avatar =
-          c.avatar ?? c.user?.avatar ?? c.users?.avatar ?? c.creator?.avatar ?? c.author?.avatar ?? null;
+          c.avatar ??
+          c.user?.avatar ??
+          c.users?.avatar ??
+          c.creator?.avatar ??
+          c.author?.avatar ??
+          null;
 
         return {
           id: c.id,
@@ -279,7 +311,6 @@ export default function EventDetailPage() {
     }
   }
 
-  // 댓글 작성 (camelCase 우선, 실패 시 snake_case 재시도)
   async function createComment() {
     if (!newComment.trim() || !detail.id) return;
     setPosting(true);
@@ -300,7 +331,11 @@ export default function EventDetailPage() {
         await send({ content: newComment.trim(), creatorId, eventId: eventNumericId });
       } catch (err: any) {
         if (String(err?.message || "").toLowerCase().includes("invalid creatorid")) {
-          await send({ content: newComment.trim(), creator_id: creatorId, event_id: eventNumericId });
+          await send({
+            content: newComment.trim(),
+            creator_id: creatorId,
+            event_id: eventNumericId,
+          });
         } else {
           throw err;
         }
@@ -339,10 +374,12 @@ export default function EventDetailPage() {
     }
   }
 
-
-  /* ====== 참여하기 / 신청 취소 (낙관적 토글) ====== */
+  /* ====== 참여하기 / 신청 취소 ====== */
   const applyToEvent = async () => {
-    if (!meId) { alert("로그인이 필요합니다."); return; }
+    if (!meId) {
+      alert("로그인이 필요합니다.");
+      return;
+    }
     if (!detail.id || busy) return;
 
     const prevAppId = myApplicationId;
@@ -351,7 +388,6 @@ export default function EventDetailPage() {
 
     setBusy(true);
     try {
-      // UI 선반영
       if (me?.id) {
         const already = prevParts.some((p) => String(p.id) === String(me.id));
         if (!already) {
@@ -359,7 +395,12 @@ export default function EventDetailPage() {
             ...prev,
             participants: [
               ...prev.participants,
-              { id: me.id, name: me.nickname ?? me.name ?? "나", nickname: me.nickname ?? me.name ?? "나", avatar: me?.avatar ?? null },
+              {
+                id: me.id,
+                name: me.nickname ?? me.name ?? "나",
+                nickname: me.nickname ?? me.name ?? "나",
+                avatar: me?.avatar ?? null,
+              },
             ],
             currentParticipants: prevCount + 1,
           }));
@@ -368,7 +409,6 @@ export default function EventDetailPage() {
 
       const res: any = await eventAPI_mutation.applyToEvent(Number(detail.id));
 
-      // 다양한 응답 구조에서 ID 추출
       const pickNumber = (v: any) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : NaN);
       const newIdCandidates = [
         res?.applicationId,
@@ -383,7 +423,6 @@ export default function EventDetailPage() {
         setMyApplicationId(picked);
         if (typeof window !== "undefined") localStorage.setItem(`appId:${detail.id}`, String(picked));
       } else {
-        // 폴백: 상세 재조회
         const fresh: any = await eventAPI.getEvent(String(detail.id));
         const appId =
           pickNumber(fresh?.myApplicationId) ||
@@ -397,7 +436,6 @@ export default function EventDetailPage() {
         }
       }
     } catch (e: any) {
-      // 실패 시 원복
       setMyApplicationId(prevAppId ?? null);
       setDetail((prev) => ({
         ...prev,
@@ -412,7 +450,6 @@ export default function EventDetailPage() {
   };
 
   const cancelApplication = async () => {
-
     const appIdNum = Number(myApplicationId);
     if (!detail.id || !Number.isFinite(appIdNum) || appIdNum <= 0 || busy) return;
 
@@ -422,7 +459,6 @@ export default function EventDetailPage() {
 
     setBusy(true);
     try {
-      // UI 선반영(내 계정 제거)
       if (me?.id) {
         const removed = prevParts.filter((p) => String(p.id) !== String(me.id));
         setDetail((prev) => ({
@@ -436,7 +472,6 @@ export default function EventDetailPage() {
       setMyApplicationId(null);
       if (typeof window !== "undefined") localStorage.removeItem(`appId:${detail.id}`);
     } catch (e: any) {
-      // 실패 시 원복
       setMyApplicationId(prevAppId);
       setDetail((prev) => ({
         ...prev,
@@ -451,10 +486,18 @@ export default function EventDetailPage() {
   };
 
   if (!eventId) {
-    return <div className="min-h-screen grid place-items-center text-destructive">유효하지 않은 이벤트 ID 입니다.</div>;
+    return (
+      <div className="min-h-screen grid place-items-center text-destructive">
+        유효하지 않은 이벤트 ID 입니다.
+      </div>
+    );
   }
   if (loading) {
-    return <div className="min-h-screen grid place-items-center text-muted-foreground">불러오는 중...</div>;
+    return (
+      <div className="min-h-screen grid place-items-center text-muted-foreground">
+        불러오는 중...
+      </div>
+    );
   }
 
   return (
@@ -486,9 +529,7 @@ export default function EventDetailPage() {
               </div>
               <div className="flex items-center text-sm text-muted-foreground">
                 <Users className="w-4 h-4 mr-1" />
-
                 {detail.currentParticipants ?? 0}/{detail.maxParticipants ?? DEFAULT_MAX}
-
               </div>
             </div>
           </CardHeader>
@@ -497,7 +538,11 @@ export default function EventDetailPage() {
             <p className="text-foreground mb-6">{detail.description ?? "내용 없음"}</p>
 
             {detail.host && (
-              <div className="flex items-center gap-3 mb-6">
+              <div
+                className="flex items-center gap-3 mb-6 cursor-pointer select-none"
+                onClick={() => goProfile(detail.host?.id)}
+                title="프로필 보기"
+              >
                 <Avatar className="w-10 h-10">
                   <AvatarImage src={detail.host.avatar ?? undefined} />
                   <AvatarFallback>{(detail.host.name ?? "호")[0]}</AvatarFallback>
@@ -522,36 +567,32 @@ export default function EventDetailPage() {
                     수정
                   </Button>
                   <Button
-  variant="destructive"
-  className="flex-1"
-  disabled={busy}
-  onClick={async () => {
-    if (!detail.id) return;
-    if (!confirm("이 밥약을 삭제(취소)할까요?")) return;
-    try {
-      setBusy(true);
-      await apiRequest(`/api/events/${detail.id}`, { method: "DELETE" });
-      // 이전: router.back();
-      router.replace("/");           // ← 메인으로
-      // 필요하면: router.replace("/events");
-    } catch (e: any) {
-      alert(e?.message || "삭제에 실패했습니다.");
-    } finally {
-      setBusy(false);
-    }
-  }}
->
-  삭제
-</Button>
+                    variant="destructive"
+                    className="flex-1"
+                    disabled={busy}
+                    onClick={async () => {
+                      if (!detail.id) return;
+                      if (!confirm("이 밥약을 삭제(취소)할까요?")) return;
+                      try {
+                        setBusy(true);
+                        await apiRequest(`/api/events/${detail.id}`, { method: "DELETE" });
+                        router.replace("/");
+                      } catch (e: any) {
+                        alert(e?.message || "삭제에 실패했습니다.");
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    삭제
+                  </Button>
                 </>
-
               ) : isApplied ? (
                 <Button variant="outline" className="w-full" disabled={busy} onClick={cancelApplication}>
                   신청 취소
                 </Button>
               ) : (
                 <Button className="w-full" disabled={busy} onClick={applyToEvent}>
-
                   참여하기
                 </Button>
               )}
@@ -559,7 +600,7 @@ export default function EventDetailPage() {
           </CardContent>
         </Card>
 
-        {/* 참여자 */}
+        {/* 참여자 + 채팅방 버튼 */}
         <Card className="mb-6">
           <CardHeader>
             <CardTitle className="text-lg">참여자 ({detail.participants.length}명)</CardTitle>
@@ -571,8 +612,14 @@ export default function EventDetailPage() {
               <div className="space-y-3">
                 {detail.participants.map((p, idx) => {
                   const displayName = p.name ?? p.nickname ?? "사용자";
+                  const uid = p.id;
                   return (
-                    <div key={String(p.id ?? idx)} className="flex items-center gap-3">
+                    <div
+                      key={String(uid ?? idx)}
+                      className="flex items-center gap-3 cursor-pointer select-none"
+                      onClick={() => goProfile(uid)}
+                      title="프로필 보기"
+                    >
                       <Avatar className="w-8 h-8">
                         <AvatarImage src={p.avatar ?? undefined} />
                         <AvatarFallback>{displayName[0]}</AvatarFallback>
@@ -583,6 +630,15 @@ export default function EventDetailPage() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+
+            {/* ★ 밥약 신청자만 채팅방 입장 버튼 */}
+            {isApplied && (
+              <div className="mt-4">
+                <Button className="w-full" onClick={() => router.push(`/chats/${detail.id}`)}>
+                  채팅방 입장하기
+                </Button>
               </div>
             )}
           </CardContent>
@@ -611,16 +667,29 @@ export default function EventDetailPage() {
             <div className="space-y-4">
               {comments.map((c) => {
                 const canDelete = meId != null && c.creatorId != null && Number(meId) === Number(c.creatorId);
+                const uid = c.user?.id;
                 return (
                   <div key={String(c.id)} className="flex gap-3">
-                    <Avatar className="w-8 h-8">
-                      <AvatarImage src={c.user?.avatar ?? undefined} />
-                      <AvatarFallback>{(c.user?.name ?? "유")[0]}</AvatarFallback>
-                    </Avatar>
+                    <div
+                      className="flex-shrink-0 cursor-pointer select-none"
+                      onClick={() => goProfile(uid)}
+                      title="프로필 보기"
+                    >
+                      <Avatar className="w-8 h-8">
+                        <AvatarImage src={c.user?.avatar ?? undefined} />
+                        <AvatarFallback>{(c.user?.name ?? "유")[0]}</AvatarFallback>
+                      </Avatar>
+                    </div>
                     <div className="flex-1">
                       <div className="flex items-center justify-between mb-1">
                         <div className="flex items-center gap-2">
-                          <span className="font-medium text-sm">{c.user?.name}</span>
+                          <span
+                            className="font-medium text-sm cursor-pointer select-none"
+                            onClick={() => goProfile(uid)}
+                            title="프로필 보기"
+                          >
+                            {c.user?.name}
+                          </span>
                           <span className="text-xs text-muted-foreground">
                             {new Date(c.createdAt).toLocaleDateString("ko-KR")}
                           </span>
@@ -645,7 +714,6 @@ export default function EventDetailPage() {
               })}
 
               {comments.length === 0 && <div className="text-sm text-muted-foreground">아직 댓글이 없습니다.</div>}
-
             </div>
           </CardContent>
         </Card>

@@ -73,7 +73,7 @@ export default function ChatList() {
         <Card
           key={chat.id}
           className="cursor-pointer hover:shadow-md transition-shadow"
-          onClick={() => router.push(`/chat/${chat.id}`)}
+          onClick={() => router.push(`/chats/${chat.id}`)}
         >
           <CardContent className="p-4">
             <div className="flex items-start space-x-3">

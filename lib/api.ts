@@ -1,3 +1,4 @@
+// lib/api.ts
 /**
  * API 호출 엔드포인트 래퍼 모음 (기존 이름 그대로)
  * - 코어 유틸은 api.core.ts에서 import
@@ -10,7 +11,7 @@ export type { Profile } from "./api.core";
 import { eventAPI_mutation } from "./api.routes";
 
 /* ─────────────────────────────────────────────────────────────
-   보조 유틸
+   내부 공용 유틸
 ───────────────────────────────────────────────────────────── */
 const toWireGender = (g: any): "Male" | "Female" | "None" | undefined => {
   if (g === "남성" || g === "M") return "Male";
@@ -23,6 +24,23 @@ const toWireGrade = (v: any): number | undefined => {
   const n = typeof v === "number" ? v : parseInt(String(v).replace(/\D/g, ""), 10);
   return Number.isFinite(n) ? n : undefined;
 };
+
+/** 여러 시도를 순차적으로 수행(가장 먼저 성공한 응답을 반환) */
+async function tryMany<T>(tries: Array<{ path: string; method?: "GET" | "POST" | "PATCH" | "DELETE"; body?: any }>): Promise<T> {
+  let lastErr: any;
+  for (const t of tries) {
+    try {
+      const res = await apiRequest(t.path, {
+        method: t.method || "GET",
+        ...(t.body ? { body: JSON.stringify(t.body), headers: { "Content-Type": "application/json" } as any } : {}),
+      });
+      return (res?.data ?? res) as T;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
 
 export function getCurrentUser(): any | null {
   if (typeof window === "undefined") return null;
@@ -98,21 +116,20 @@ export const authAPI = {
   },
 
   updateProfile: async (profileData: { grade: any; gender: any; nickname: string }) => {
-  const grade = toWireGrade(profileData.grade);
-  const gender = toWireGender(profileData.gender);
-  const nickname = profileData.nickname?.trim();
-  if (!grade || !gender || !nickname) {
-    throw new Error("학년, 성별, 닉네임은 모두 입력해야 합니다.");
-  }
-  const payload = { grade, gender, nickname };
+    const grade = toWireGrade(profileData.grade);
+    const gender = toWireGender(profileData.gender);
+    const nickname = profileData.nickname?.trim();
+    if (!grade || !gender || !nickname) {
+      throw new Error("학년, 성별, 닉네임은 모두 입력해야 합니다.");
+    }
+    const payload = { grade, gender, nickname };
 
-  // 🔧 여기 경로 끝에 / 붙이기
-  return apiRequest("/api/auth/profile/", {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
-},
-
+    // BE가 /, 무/유 슬래시 모두 수용하지만 TRIE를 줄이기 위해 trailing slash 유지
+    return apiRequest("/api/auth/profile/", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
 };
 
 /* ─────────────────────────────────────────────────────────────
@@ -126,7 +143,6 @@ export const userAPI = {
    이벤트 (읽기/생성 등)
 ───────────────────────────────────────────────────────────── */
 export const eventAPI_read = {
-  // 🔧 fetch(BASE...) → apiRequest 로 교체 (프록시/에러 파싱 통일)
   createEvent: async (eventData: any) => {
     const data = await apiRequest("/api/events/creation", {
       method: "POST",
@@ -144,7 +160,6 @@ export const eventAPI_read = {
     const q = sp.toString();
 
     const raw = await apiRequest(`/api/events${q ? `?${q}` : ""}`);
-
     const data = (raw && typeof raw === "object" && "data" in raw) ? (raw as any).data : raw;
 
     const items =
@@ -164,7 +179,6 @@ export const eventAPI_read = {
     if (!eid) return null;
 
     const res = await apiRequest(`/api/events/${encodeURIComponent(eid)}`);
-
     const raw = res?.data?.item ?? res?.data ?? res?.item ?? res;
 
     const pick = (obj: any, ...keys: string[]) => {
@@ -215,10 +229,17 @@ export const eventAPI_read = {
 };
 
 /* ─────────────────────────────────────────────────────────────
-   웹소켓
+   웹소켓 (서버 요구: /ws/chats/:eventId)
 ───────────────────────────────────────────────────────────── */
+export type ChatMessage = {
+  id?: number | string;
+  userId?: number | null;
+  content: string;
+  createdAt?: string; // ISO
+};
+
 export function openChatSocket(
-  chatId: number,
+  eventId: number,
   opts?: {
     token?: string;
     onMessage?: (msg: any) => void;
@@ -228,13 +249,27 @@ export function openChatSocket(
   }
 ) {
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
-  const wsBase = process.env.NEXT_PUBLIC_WS_URL || apiBase.replace(/^http/i, "ws");
-  const base = wsBase.replace(/\/+$/, "");
-  const token = opts?.token || (typeof window !== "undefined" ? localStorage.getItem("authToken") || "" : "");
-  const url = `${base}/ws/chats/${chatId}` + (token ? `?token=${encodeURIComponent(token)}` : "");
+  const wsBase  = process.env.NEXT_PUBLIC_WS_URL || apiBase.replace(/^http/i, "ws");
+  const base    = wsBase.replace(/\/+$/, "");
+
+  const token =
+    opts?.token ||
+    (typeof window !== "undefined"
+      ? localStorage.getItem("authToken") || localStorage.getItem("accessToken") || ""
+      : "");
+
+  // ✅ 서버 업그레이드 경로: /ws/chats/:eventId  (+ token 은 쿼리)
+  const url =
+    `${base}/ws/chats/${encodeURIComponent(eventId)}` +
+    (token ? `?token=${encodeURIComponent(token)}` : "");
 
   const ws = new WebSocket(url);
-  ws.addEventListener("open", () => opts?.onOpen?.());
+
+  ws.addEventListener("open", () => {
+    // 보수적으로 join 신호 한 번 더
+    try { ws.send(JSON.stringify({ type: "join", eventId })); } catch {}
+    opts?.onOpen?.();
+  });
   ws.addEventListener("message", (e) => {
     let data: any = e.data;
     try { data = JSON.parse(e.data); } catch {}
@@ -242,17 +277,51 @@ export function openChatSocket(
   });
   ws.addEventListener("close", (ev) => opts?.onClose?.(ev));
   ws.addEventListener("error", (ev) => opts?.onError?.(ev));
+
   return ws;
 }
 
 /* ─────────────────────────────────────────────────────────────
-   채팅
+   채팅 (조회만 REST, 전송은 WS 권장)
 ───────────────────────────────────────────────────────────── */
 export const chatAPI = {
-  getChatRoom: async (chatId: number) => apiRequest(`/api/chats/${chatId}`),
-  sendMessage: async (chatId: number, content: string) =>
-    apiRequest(`/api/chats/${chatId}`, { method: "POST", body: JSON.stringify({ content }) }),
-  leaveChat: async (chatId: number) => apiRequest(`/api/chats/${chatId}`, { method: "PATCH" }),
+  /** 채팅방 내용 불러오기 (과거 메시지) */
+  async getChatRoom(eventId: number) {
+    const res = await apiRequest(`/api/chats/${encodeURIComponent(eventId)}`);
+    const body = (res && typeof res === "object" && "items" in (res as any))
+      ? (res as any)
+      : (res?.data ?? res);
+
+    const raw: any[] =
+      Array.isArray(body?.items) ? body.items :
+      Array.isArray(body?.messages) ? body.messages :
+      Array.isArray(body) ? body : [];
+
+    return raw.map((m: any) => ({
+      id: m.id,
+      userId: m.user?.id ?? m.userId ?? m.user_id ?? null,
+      content: String(m.content ?? ""),
+      createdAt: String(m.createdAt ?? m.created_at ?? new Date().toISOString()),
+    })) as ChatMessage[];
+  },
+
+  /** (선택) 폴백: 서버에 REST 전송이 없으면 실패할 수 있음. 기본적으로 WS만 사용하세요. */
+  async sendMessage(eventId: number, text: string) {
+    return await tryMany<any>([
+      { path: `/api/chats/${encodeURIComponent(eventId)}`, method: "POST", body: { content: text } },
+      { path: `/api/chats/${encodeURIComponent(eventId)}`, method: "POST", body: { message: text } },
+      { path: `/api/chats/${encodeURIComponent(eventId)}`, method: "POST", body: { text } },
+    ]);
+  },
+
+  /** 채팅 나가기 (서버 미구현 시에도 안전하게 NOP 처리) */
+  async leaveChat(eventId: number) {
+    try {
+      return await apiRequest(`/api/chats/${encodeURIComponent(eventId)}`, { method: "PATCH" });
+    } catch {
+      return { ok: true };
+    }
+  },
 };
 
 export const eventAPI = { ...eventAPI_mutation, ...eventAPI_read };
@@ -305,7 +374,6 @@ export const restaurantAPI = {
     return apiRequest(`/api/restaurants/recommends${qs ? `?${qs}` : ""}`);
   },
 
-  // 🔧 fetch('/api/...') → apiRequest 로 교체 (프록시 + 응답 래핑 일관)
   async getById(id: number) {
     const res = await apiRequest(`/api/restaurants/${id}`);
     const body = (res && typeof res === "object" && "data" in res) ? (res as any).data : res;
@@ -317,4 +385,5 @@ export const restaurantAPI = {
   },
 };
 
-export { /*chatAPI,  notificationAPI,*/ commentAPI, reviewAPI } from "./api.routes";
+// 필요한 라우트에서 끌어다 쓰는 보조 API들 그대로 export
+export { commentAPI, reviewAPI } from "./api.routes";
