@@ -8,15 +8,14 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { MessageSquare, Search } from "lucide-react";
-import { apiRequest, chatAPI } from "@/lib/api";
 
+import { eventAPI, chatAPI } from "@/lib/api";
 const DEBUG = process.env.NEXT_PUBLIC_DEBUG === "1";
-
 type ChatPreview = {
-  id: number | string;
+  id: number | string;         // chatId (= eventId 라는 가정)
   title: string;
   lastMessage?: string | null;
-  lastAt?: string | null; // ISO
+  lastAt?: string | null;      // ISO
   participants?: number | null;
 };
 
@@ -27,42 +26,6 @@ const MOCK_CHAT: ChatPreview = {
   lastAt: new Date().toISOString(),
   participants: 2,
 };
-
-// 여러 응답 스키마를 받아 통일
-function normalizeEvents(raw: any): Array<any> {
-  const data = raw?.data ?? raw;
-  const items =
-    Array.isArray(data?.items) ? data.items :
-    Array.isArray(data?.events) ? data.events :
-    Array.isArray(data) ? data : [];
-  return items;
-}
-
-// 내가 참여한 이벤트 목록을 여러 후보 엔드포인트에서 시도
-async function loadMyEvents(): Promise<any[]> {
-  const tries = [
-    "/api/events/me",                // 1) 명시적 me 엔드포인트
-    "/api/my/events",                // 2) my prefix
-    "/api/events?me=joined",         // 3) 쿼리 기반
-    "/api/events?joined=1",
-    "/api/events?participated=1",
-  ];
-
-  let lastErr: any;
-  for (const path of tries) {
-    try {
-      const res = await apiRequest(path);
-      const items = normalizeEvents(res);
-      if (Array.isArray(items)) return items;
-    } catch (e) {
-      lastErr = e;
-      if (DEBUG) console.warn("[chats] loadMyEvents try failed:", path, e);
-    }
-  }
-  // 전부 실패 → 빈 배열(목업으로 대체)
-  if (DEBUG && lastErr) console.error("[chats] loadMyEvents all failed:", lastErr);
-  return [];
-}
 
 function formatTime(iso?: string | null) {
   if (!iso) return "";
@@ -95,8 +58,11 @@ export default function ChatsPage() {
       setUsedMock(false);
 
       try {
-        // 내가 참여한 이벤트 목록(=채팅방 후보)
-        const myEvents = await loadMyEvents();
+        // 1) 내가 참여한 밥약(=채팅방 후보)
+        const myEvents: any[] = await eventAPI.getMyEvents().catch(() => {
+          // 네트워크/서버 오류
+          throw new Error("서버 연결에 실패했습니다. 잠시 후 다시 시도해주세요.");
+        });
 
         if (!Array.isArray(myEvents) || myEvents.length === 0) {
           if (!cancelled) {
@@ -107,39 +73,28 @@ export default function ChatsPage() {
           return;
         }
 
-        // 최근 N개만 목록에 보여주고, 각 방의 최근 메시지를 병렬로 조회
-        const TOP_N = 20;
-        const top = myEvents.slice(0, TOP_N);
+        // 2) 각 밥약의 최근 메시지 1개씩 가져오기 (과한 호출 방지를 위해 상위 20개만)
+        const top = myEvents.slice(0, 20);
 
         const results = await Promise.allSettled(
           top.map(async (ev: any) => {
-            // 이벤트 스키마 유연 대응
-            const id = ev?.id ?? ev?.eventId ?? ev?.chatId;
-            const title =
-              ev?.title ??
-              ev?.name ??
-              (ev?.restaurant?.name ? `${ev.restaurant.name}의 밥약` : "제목 없음");
-
-            // 채팅방 과거 메시지 중 최신 1개만
-            const msgs = await chatAPI.getChatRoom(Number(id)).catch((err) => {
-              if (DEBUG) console.error("[chats] getChatRoom failed:", id, err);
-              return [];
-            });
-
+            const id = ev?.id ?? ev?.eventId;
+            const title = ev?.title ?? "제목 없음";
             let lastMessage: string | null = null;
             let lastAt: string | null = null;
 
+            // GET /api/chats/{chatId}
+            const msgs: any[] = await chatAPI.getChatRoom(Number(id)).catch((err) => {
+  if (DEBUG) console.error("[chats] getChatRoom failed:", id, err);
+  return [];
+});
             if (Array.isArray(msgs) && msgs.length) {
               const m = msgs[msgs.length - 1];
               lastMessage = m?.content ?? null;
-              lastAt = m?.createdAt ?? null;
+              lastAt = m?.created_at ?? m?.createdAt ?? null;
             }
-
             const participants =
-              ev?.current_participants ??
-              ev?.participantsCount ??
-              ev?.participants?.length ??
-              null;
+              ev?.current_participants ?? ev?.participants ?? ev?.currentParticipants ?? null;
 
             return { id, title, lastMessage, lastAt, participants } as ChatPreview;
           })
@@ -151,26 +106,20 @@ export default function ChatsPage() {
 
         if (!cancelled) {
           if (previews.length === 0) {
+            // 이벤트는 있지만 채팅 데이터가 전혀 없을 때
             setError("채팅 내역이 없어 샘플 데이터를 보여드려요.");
             setItems([MOCK_CHAT]);
             setUsedMock(true);
           } else {
-            // 최신순 정렬
-            previews.sort((a, b) => {
-              const ta = a.lastAt ? +new Date(a.lastAt) : 0;
-              const tb = b.lastAt ? +new Date(b.lastAt) : 0;
-              return tb - ta;
-            });
             setItems(previews);
           }
         }
       } catch (e: any) {
-        if (!cancelled) {
-          setError(e?.message || "데이터를 불러오지 못했습니다.");
-          setItems([MOCK_CHAT]);
-          setUsedMock(true);
-        }
-      } finally {
+  if (DEBUG) console.error("[chats] load error:", e);
+  setError(e?.message || "데이터를 불러오지 못했습니다.");
+  setItems([MOCK_CHAT]);
+  setUsedMock(true);
+} finally {
         if (!cancelled) setLoading(false);
       }
     })();
@@ -180,6 +129,7 @@ export default function ChatsPage() {
     };
   }, []);
 
+  // 목업일 때는 검색으로 사라지지 않게 그대로 노출
   const filtered = useMemo(() => {
     if (usedMock) return items;
     if (!q.trim()) return items;
@@ -189,7 +139,6 @@ export default function ChatsPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* 헤더 */}
       <div className="sticky top-0 z-10 bg-card border-b border-border">
         <div className="container mx-auto px-4 py-4 flex items-center gap-3">
           <MessageSquare className="w-5 h-5" />
@@ -204,7 +153,6 @@ export default function ChatsPage() {
           </div>
         )}
 
-        {/* 검색 */}
         <div className="relative mb-4">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
@@ -212,13 +160,12 @@ export default function ChatsPage() {
             placeholder="채팅방 검색"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            disabled={usedMock}
+            disabled={usedMock} // 목업일 땐 검색 비활성화(1개 고정)
           />
         </div>
 
         <Separator className="mb-4" />
 
-        {/* 목록 */}
         {loading ? (
           <div className="text-sm text-muted-foreground">불러오는 중…</div>
         ) : filtered.length === 0 ? (
@@ -230,7 +177,9 @@ export default function ChatsPage() {
               return (
                 <Card
                   key={c.id}
-                  className={`transition-shadow ${isMock ? "opacity-90" : "hover:shadow-sm cursor-pointer"}`}
+                  className={`transition-shadow ${
+                    isMock ? "opacity-90" : "hover:shadow-sm cursor-pointer"
+                  }`}
                   onClick={() => {
                     if (!isMock) router.push(`/chats/${c.id}`);
                   }}
