@@ -413,6 +413,4 @@ export const restaurantAPI = {
    합성 Export
 ───────────────────────────────────────────────────────────── */
 export const eventAPI = { ...eventAPI_mutation, ...eventAPI_read };
-
-// 필요한 라우트에서 끌어다 쓰는 보조 API들 그대로 export
 export { commentAPI, reviewAPI };

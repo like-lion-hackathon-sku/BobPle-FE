@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { ArrowLeft, Star, MapPin, Calendar, Users, Flag } from "lucide-react";
+import { ArrowLeft, Star, Users, Flag } from "lucide-react";
 import { apiRequest } from "@/lib/api";
 
 /* ========= Types ========= */
@@ -18,6 +18,7 @@ type Review = {
   date: string;
   comment?: string | null;
 };
+
 type UiEvent = {
   id: number | string;
   title: string;
@@ -27,10 +28,12 @@ type UiEvent = {
   status: "upcoming" | "completed";
   isHost: boolean;
 };
+
 type MeLite = { id: number; name: string; avatar?: string | null };
 
 /* ========= Utils ========= */
 const FALLBACK_NAME = "이름 없음";
+
 const asArray = (d: any): any[] =>
   Array.isArray(d) ? d
   : Array.isArray(d?.items) ? d.items
@@ -82,7 +85,7 @@ export default function MyProfilePage() {
         setLoading(true);
         setErr(null);
 
-        // 내 정보는 localStorage에서만 읽음 (백엔드 /users/me 미사용)
+        // 내 정보는 localStorage에서만 읽음 (/users/me 미사용)
         let myId: number | null = null;
         let myName: string | null = null;
         let myAvatar: string | null = null;
@@ -97,7 +100,9 @@ export default function MyProfilePage() {
         // 내가 주최/참여한 밥약
         const ev: UiEvent[] = [];
         for (let page = 1; page <= 60; page++) {
-          const r: any = await apiRequest(`/api/events?userId=${myId}&page=${page}&size=50`).catch(() => null);
+          const r: any = await apiRequest(
+            `/api/events?userId=${myId}&page=${page}&size=50`
+          ).catch(() => null);
           const items = asArray(r);
           if (!items.length) break;
 
@@ -124,16 +129,23 @@ export default function MyProfilePage() {
           }
 
           const pg = r?.data?.pagination ?? r?.pagination ?? {};
-          const hasNext = typeof pg?.hasNext === "boolean" ? pg.hasNext : (pg?.page ?? 1) < (pg?.totalPages ?? 1);
+          const hasNext =
+            typeof pg?.hasNext === "boolean"
+              ? pg.hasNext
+              : (pg?.page ?? 1) < (pg?.totalPages ?? 1);
           if (!hasNext) break;
         }
 
         // 내가 받은 리뷰
         const rv: Review[] = [];
         for (let page = 1; page <= 200; page++) {
-          let res: any = await apiRequest(`/api/reviews/${myId}?page=${page}&take=50`).catch(() => null);
+          let res: any = await apiRequest(
+            `/api/reviews/${myId}?page=${page}&take=50`
+          ).catch(() => null);
           if (!res || (!Array.isArray(res?.items) && !Array.isArray(res?.data?.items))) {
-            res = await apiRequest(`/api/reviews/${myId}?page=${page}&size=50`).catch(() => null);
+            res = await apiRequest(
+              `/api/reviews/${myId}?page=${page}&size=50`
+            ).catch(() => null);
           }
           const items = asArray(res);
           if (!items.length) break;
@@ -335,12 +347,16 @@ export default function MyProfilePage() {
                           {[...Array(5)].map((_, i) => (
                             <Star
                               key={i}
-                              className={`w-3 h-3 ${i < rv.rating ? "fill-current text-yellow-500" : "text-gray-300"}`}
+                              className={`w-3 h-3 ${
+                                i < rv.rating ? "fill-current text-yellow-500" : "text-gray-300"
+                              }`}
                             />
                           ))}
                         </div>
 
-                        {rv.comment && <p className="text-sm text-muted-foreground">{rv.comment}</p>}
+                        {rv.comment && (
+                          <p className="text-sm text-muted-foreground">{rv.comment}</p>
+                        )}
                       </div>
                     </div>
                   </CardContent>

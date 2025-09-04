@@ -55,7 +55,10 @@ const toNum = (v: any): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
-const computeStatus = (startISO?: string | null, endISO?: string | null): "upcoming" | "completed" => {
+const computeStatus = (
+  startISO?: string | null,
+  endISO?: string | null
+): "upcoming" | "completed" => {
   const now = Date.now();
   const end = endISO ? Date.parse(endISO) : NaN;
   const start = startISO ? Date.parse(startISO) : NaN;
@@ -66,10 +69,11 @@ const computeStatus = (startISO?: string | null, endISO?: string | null): "upcom
 
 const asArray = (data: any): any[] => {
   if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.items)) return data.items;
+  if (Array.isArray(data?.events)) return data.events;
   if (Array.isArray(data?.data?.items)) return data.data.items;
-  if (Array.isArray(data?.results)) return data.results;
+  if (Array.isArray(data?.items)) return data.items;
   if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.results)) return data.results;
   if (Array.isArray(data?.success?.lists)) return data.success.lists;
   return [];
 };
@@ -225,7 +229,6 @@ export default function UserProfilePage() {
                 fallbackName ??
                 null;
             } else {
-              // 참가자 목록에서 찾기
               const hit =
                 (Array.isArray(raw?.participants) ? raw.participants : []).find(
                   (p: any) => Number(p?.id ?? p?.userId ?? p?.user_id) === Number(profileId)
@@ -303,12 +306,17 @@ export default function UserProfilePage() {
     return () => {
       canceled = true;
     };
-  }, [profileId]);
+  }, [profileId, ratingAvg]);
 
   const joinedLabel = useMemo(() => {
     if (!header?.joinedAt) return "-";
     try {
-      return new Date(header.joinedAt).toLocaleDateString("ko-KR", { year: "numeric", month: "long" }) + " 가입";
+      return (
+        new Date(header.joinedAt).toLocaleDateString("ko-KR", {
+          year: "numeric",
+          month: "long",
+        }) + " 가입"
+      );
     } catch {
       return "-";
     }
@@ -411,13 +419,21 @@ export default function UserProfilePage() {
               <div className="text-sm text-muted-foreground">최근 밥약이 없습니다.</div>
             ) : (
               events.map((ev) => (
-                <Card key={ev.id} className="hover:shadow-md transition-shadow cursor-pointer" onClick={() => router.push(`/events/${ev.id}`)}>
+                <Card
+                  key={ev.id}
+                  className="hover:shadow-md transition-shadow cursor-pointer"
+                  onClick={() => router.push(`/events/${ev.id}`)}
+                >
                   <CardContent className="pt-4">
                     <div className="flex items-center justify-between">
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           <h3 className="font-semibold mb-1">{ev.title}</h3>
-                          {ev.isHost && <Badge variant="outline" className="text-xs">주최</Badge>}
+                          {ev.isHost && (
+                            <Badge variant="outline" className="text-xs">
+                              주최
+                            </Badge>
+                          )}
                         </div>
                         <div className="flex items-center space-x-4 text-sm text-muted-foreground">
                           <span>{new Date(ev.date).toLocaleDateString("ko-KR")}</span>
@@ -472,7 +488,9 @@ export default function UserProfilePage() {
                         </div>
 
                         {rv.comment && (
-                          <p className="text-sm text-muted-foreground whitespace-pre-wrap">{rv.comment}</p>
+                          <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                            {rv.comment}
+                          </p>
                         )}
                       </div>
                     </div>
