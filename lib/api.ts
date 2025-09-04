@@ -8,20 +8,42 @@ import { apiRequest, refreshPOST, getAuthToken, API_BASE_URL } from "./api.core"
 export { apiRequest, refreshPOST, getAuthToken, API_BASE_URL };
 export type { Profile } from "./api.core";
 
-import { eventAPI_mutation } from "./api.routes";
+import { eventAPI_mutation, commentAPI, reviewAPI } from "./api.routes";
 
 /* ─────────────────────────────────────────────────────────────
    내부 공용 유틸
 ───────────────────────────────────────────────────────────── */
 const toWireGender = (g: any): "Male" | "Female" | "None" | undefined => {
-  if (g === "남성" || g === "M") return "Male";
-  if (g === "여성" || g === "F") return "Female";
-  if (g === "상관없음" || g === "무관" || g === "N" || g === "선택안함") return "None";
+  if (g == null) return undefined;
+  const s = String(g).trim().toLowerCase();
+
+  // 이미 wire 값 허용
+  if (s === "male") return "Male";
+  if (s === "female") return "Female";
+  if (s === "none") return "None";
+
+  // UI 표기/축약형
+  if (s === "남성" || s === "m") return "Male";
+  if (s === "여성" || s === "f") return "Female";
+  if (s === "상관없음" || s === "무관" || s === "n" || s === "선택안함") return "None";
+
   return undefined;
 };
+
 const toWireGrade = (v: any): number | undefined => {
   if (v == null) return undefined;
-  const n = typeof v === "number" ? v : parseInt(String(v).replace(/\D/g, ""), 10);
+
+  // 숫자면 그대로 (1~6)
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+
+  const s = String(v).trim();
+
+  // 대학원생/졸업생 매핑
+  if (s.includes("대학원")) return 5;
+  if (s.includes("졸업")) return 6;
+
+  // "1학년" 등에서 숫자만 추출
+  const n = parseInt(s.replace(/\D/g, ""), 10);
   return Number.isFinite(n) ? n : undefined;
 };
 
@@ -116,15 +138,19 @@ export const authAPI = {
   },
 
   updateProfile: async (profileData: { grade: any; gender: any; nickname: string }) => {
+    // 프론트에서 wire 값(1~6, Male/Female/None) 또는 UI 값이 올 수 있으므로 normalize
     const grade = toWireGrade(profileData.grade);
     const gender = toWireGender(profileData.gender);
-    const nickname = profileData.nickname?.trim();
-    if (!grade || !gender || !nickname) {
+    const nickname = (profileData.nickname ?? "").trim();
+
+    // 존재 여부만 정확히 체크 (grade == null 로 0과 구분)
+    if (grade == null || !gender || nickname.length === 0) {
       throw new Error("학년, 성별, 닉네임은 모두 입력해야 합니다.");
     }
+
     const payload = { grade, gender, nickname };
 
-    // BE가 /, 무/유 슬래시 모두 수용하지만 TRIE를 줄이기 위해 trailing slash 유지
+    // trailing slash 유지
     return apiRequest("/api/auth/profile/", {
       method: "PUT",
       body: JSON.stringify(payload),
@@ -258,7 +284,7 @@ export function openChatSocket(
       ? localStorage.getItem("authToken") || localStorage.getItem("accessToken") || ""
       : "");
 
-  // ✅ 서버 업그레이드 경로: /ws/chats/:eventId  (+ token 은 쿼리)
+  // 서버 업그레이드 경로: /ws/chats/:eventId  (+ token 은 쿼리)
   const url =
     `${base}/ws/chats/${encodeURIComponent(eventId)}` +
     (token ? `?token=${encodeURIComponent(token)}` : "");
@@ -324,8 +350,6 @@ export const chatAPI = {
   },
 };
 
-export const eventAPI = { ...eventAPI_mutation, ...eventAPI_read };
-
 /* ─────────────────────────────────────────────────────────────
    알림
 ───────────────────────────────────────────────────────────── */
@@ -385,5 +409,10 @@ export const restaurantAPI = {
   },
 };
 
+/* ─────────────────────────────────────────────────────────────
+   합성 Export
+───────────────────────────────────────────────────────────── */
+export const eventAPI = { ...eventAPI_mutation, ...eventAPI_read };
+
 // 필요한 라우트에서 끌어다 쓰는 보조 API들 그대로 export
-export { commentAPI, reviewAPI } from "./api.routes";
+export { commentAPI, reviewAPI };

@@ -1,3 +1,4 @@
+// app/chats/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -8,15 +9,15 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { MessageSquare, Search } from "lucide-react";
-import { apiRequest, chatAPI } from "@/lib/api";
+import { eventAPI, chatAPI } from "@/lib/api";
 
 const DEBUG = process.env.NEXT_PUBLIC_DEBUG === "1";
 
 type ChatPreview = {
-  id: number | string;
+  id: number | string;       // chatId (= eventId 가정)
   title: string;
   lastMessage?: string | null;
-  lastAt?: string | null; // ISO
+  lastAt?: string | null;    // ISO
   participants?: number | null;
 };
 
@@ -28,39 +29,12 @@ const MOCK_CHAT: ChatPreview = {
   participants: 2,
 };
 
-// 여러 응답 스키마를 받아 통일
-function normalizeEvents(raw: any): Array<any> {
-  const data = raw?.data ?? raw;
-  const items =
-    Array.isArray(data?.items) ? data.items :
-    Array.isArray(data?.events) ? data.events :
-    Array.isArray(data) ? data : [];
-  return items;
-}
-
-// 내가 참여한 이벤트 목록을 여러 후보 엔드포인트에서 시도
-async function loadMyEvents(): Promise<any[]> {
-  const tries = [
-    "/api/events/me",                // 1) 명시적 me 엔드포인트
-    "/api/my/events",                // 2) my prefix
-    "/api/events?me=joined",         // 3) 쿼리 기반
-    "/api/events?joined=1",
-    "/api/events?participated=1",
-  ];
-
-  let lastErr: any;
-  for (const path of tries) {
-    try {
-      const res = await apiRequest(path);
-      const items = normalizeEvents(res);
-      if (Array.isArray(items)) return items;
-    } catch (e) {
-      lastErr = e;
-      if (DEBUG) console.warn("[chats] loadMyEvents try failed:", path, e);
-    }
-  }
-  // 전부 실패 → 빈 배열(목업으로 대체)
-  if (DEBUG && lastErr) console.error("[chats] loadMyEvents all failed:", lastErr);
+function asArray(v: any): any[] {
+  if (Array.isArray(v)) return v;
+  if (Array.isArray(v?.items)) return v.items;
+  if (Array.isArray(v?.data?.items)) return v.data.items;
+  if (Array.isArray(v?.data)) return v.data;
+  if (Array.isArray(v?.success?.items)) return v.success.items;
   return [];
 }
 
@@ -95,10 +69,13 @@ export default function ChatsPage() {
       setUsedMock(false);
 
       try {
-        // 내가 참여한 이벤트 목록(=채팅방 후보)
-        const myEvents = await loadMyEvents();
+        // 1) 내가 신청/참여한 밥약 목록 (응답형식 정규화!)
+        const appsRes = await eventAPI.getMyEvents().catch((e: any) => {
+          throw new Error("서버 연결에 실패했습니다. 잠시 후 다시 시도해주세요.");
+        });
+        const myApps = asArray(appsRes);
 
-        if (!Array.isArray(myEvents) || myEvents.length === 0) {
+        if (myApps.length === 0) {
           if (!cancelled) {
             setError("참여 중인 채팅방(밥약)이 없습니다.");
             setItems([MOCK_CHAT]);
@@ -107,41 +84,40 @@ export default function ChatsPage() {
           return;
         }
 
-        // 최근 N개만 목록에 보여주고, 각 방의 최근 메시지를 병렬로 조회
-        const TOP_N = 20;
-        const top = myEvents.slice(0, TOP_N);
+        // 2) 상위 20개에 대해 최근 메시지 1개 조회
+        const top = myApps.slice(0, 20);
 
         const results = await Promise.allSettled(
-          top.map(async (ev: any) => {
-            // 이벤트 스키마 유연 대응
-            const id = ev?.id ?? ev?.eventId ?? ev?.chatId;
-            const title =
-              ev?.title ??
-              ev?.name ??
-              (ev?.restaurant?.name ? `${ev.restaurant.name}의 밥약` : "제목 없음");
-
-            // 채팅방 과거 메시지 중 최신 1개만
-            const msgs = await chatAPI.getChatRoom(Number(id)).catch((err) => {
-              if (DEBUG) console.error("[chats] getChatRoom failed:", id, err);
-              return [];
-            });
-
-            let lastMessage: string | null = null;
-            let lastAt: string | null = null;
-
-            if (Array.isArray(msgs) && msgs.length) {
-              const m = msgs[msgs.length - 1];
-              lastMessage = m?.content ?? null;
-              lastAt = m?.createdAt ?? null;
-            }
-
+          top.map(async (app: any) => {
+            const eventId = Number(app?.eventId ?? app?.id);     // ← 채팅방 = 이벤트ID
+            const title = app?.title ?? "제목 없음";
             const participants =
-              ev?.current_participants ??
-              ev?.participantsCount ??
-              ev?.participants?.length ??
+              app?.participantsCount ??
+              app?.participants_count ??
+              app?.current_participants ??
+              app?.currentParticipants ??
               null;
 
-            return { id, title, lastMessage, lastAt, participants } as ChatPreview;
+            // GET /api/chats/{chatId}
+            let msgs: any[] = [];
+            try {
+              const r = await chatAPI.getChatRoom(eventId);
+              msgs = asArray(r);
+            } catch (err) {
+              if (DEBUG) console.error("[chats] getChatRoom failed:", eventId, err);
+            }
+
+            const last = msgs.length ? msgs[msgs.length - 1] : null;
+            const lastMessage = last?.content ?? null;
+            const lastAt = last?.created_at ?? last?.createdAt ?? null;
+
+            return {
+              id: eventId,
+              title,
+              lastMessage,
+              lastAt,
+              participants,
+            } as ChatPreview;
           })
         );
 
@@ -155,21 +131,20 @@ export default function ChatsPage() {
             setItems([MOCK_CHAT]);
             setUsedMock(true);
           } else {
-            // 최신순 정렬
+            // 최근 메시지 시간 기준 정렬(없으면 뒤로)
             previews.sort((a, b) => {
-              const ta = a.lastAt ? +new Date(a.lastAt) : 0;
-              const tb = b.lastAt ? +new Date(b.lastAt) : 0;
+              const ta = a.lastAt ? Date.parse(a.lastAt) : 0;
+              const tb = b.lastAt ? Date.parse(b.lastAt) : 0;
               return tb - ta;
             });
             setItems(previews);
           }
         }
       } catch (e: any) {
-        if (!cancelled) {
-          setError(e?.message || "데이터를 불러오지 못했습니다.");
-          setItems([MOCK_CHAT]);
-          setUsedMock(true);
-        }
+        if (DEBUG) console.error("[chats] load error:", e);
+        setError(e?.message || "데이터를 불러오지 못했습니다.");
+        setItems([MOCK_CHAT]);
+        setUsedMock(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -189,7 +164,6 @@ export default function ChatsPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* 헤더 */}
       <div className="sticky top-0 z-10 bg-card border-b border-border">
         <div className="container mx-auto px-4 py-4 flex items-center gap-3">
           <MessageSquare className="w-5 h-5" />
@@ -204,7 +178,6 @@ export default function ChatsPage() {
           </div>
         )}
 
-        {/* 검색 */}
         <div className="relative mb-4">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
@@ -218,7 +191,6 @@ export default function ChatsPage() {
 
         <Separator className="mb-4" />
 
-        {/* 목록 */}
         {loading ? (
           <div className="text-sm text-muted-foreground">불러오는 중…</div>
         ) : filtered.length === 0 ? (
@@ -232,7 +204,7 @@ export default function ChatsPage() {
                   key={c.id}
                   className={`transition-shadow ${isMock ? "opacity-90" : "hover:shadow-sm cursor-pointer"}`}
                   onClick={() => {
-                    if (!isMock) router.push(`/chats/${c.id}`);
+                    if (!isMock) router.push(`/chats/${c.id}`); // ← /chats/{eventId}
                   }}
                 >
                   <CardContent className="py-3 px-4">

@@ -139,6 +139,20 @@ export default function EventDetailPage() {
 
   const isApplied = myApplicationId != null && Number(myApplicationId) > 0;
 
+  /* ─────────────────────────────────────────────
+   * 프로필 이동 유틸 (나 → /profile, 타인 → /profile/:id)
+   * ──────────────────────────────────────────── */
+  const goProfile = (userId?: number | string) => {
+    if (userId == null) return; // id 없으면 무시
+    const my = Number(meId);
+    const target = Number(userId);
+    if (Number.isFinite(my) && Number.isFinite(target) && my === target) {
+      router.push("/profile");
+    } else {
+      router.push(`/profile/${encodeURIComponent(String(userId))}`);
+    }
+  };
+
   useEffect(() => {
     (async () => {
       if (!eventId) {
@@ -403,14 +417,11 @@ export default function EventDetailPage() {
         res?.id,
         res?.data?.id,
       ];
-      const picked = newIdCandidates.map(pickNumber).find((n) => Number.isFinite(n)) as
-        | number
-        | undefined;
+      const picked = newIdCandidates.map(pickNumber).find((n) => Number.isFinite(n)) as number | undefined;
 
       if (picked) {
         setMyApplicationId(picked);
-        if (typeof window !== "undefined")
-          localStorage.setItem(`appId:${detail.id}`, String(picked));
+        if (typeof window !== "undefined") localStorage.setItem(`appId:${detail.id}`, String(picked));
       } else {
         const fresh: any = await eventAPI.getEvent(String(detail.id));
         const appId =
@@ -419,8 +430,7 @@ export default function EventDetailPage() {
           pickNumber((fresh?.success ?? {}).id);
         if (appId) {
           setMyApplicationId(appId);
-          if (typeof window !== "undefined")
-            localStorage.setItem(`appId:${detail.id}`, String(appId));
+          if (typeof window !== "undefined") localStorage.setItem(`appId:${detail.id}`, String(appId));
         } else {
           throw new Error("신청은 처리됐지만 신청 ID 확인에 실패했습니다.");
         }
@@ -513,41 +523,33 @@ export default function EventDetailPage() {
                   <div className="flex items-center">
                     <Clock className="w-4 h-4 mr-1" />
                     {dateLabel ?? "시간 미정"}
-                    {detail.startHHMM &&
-                      ` (${detail.startHHMM}${
-                        detail.endHHMM ? `-${detail.endHHMM}` : ""
-                      })`}
+                    {detail.startHHMM && ` (${detail.startHHMM}${detail.endHHMM ? `-${detail.endHHMM}` : ""})`}
                   </div>
                 </div>
               </div>
               <div className="flex items-center text-sm text-muted-foreground">
                 <Users className="w-4 h-4 mr-1" />
-                {detail.currentParticipants ?? 0}/
-                {detail.maxParticipants ?? DEFAULT_MAX}
+                {detail.currentParticipants ?? 0}/{detail.maxParticipants ?? DEFAULT_MAX}
               </div>
             </div>
           </CardHeader>
 
           <CardContent>
-            <p className="text-foreground mb-6">
-              {detail.description ?? "내용 없음"}
-            </p>
+            <p className="text-foreground mb-6">{detail.description ?? "내용 없음"}</p>
 
             {detail.host && (
-              <div className="flex items-center gap-3 mb-6">
+              <div
+                className="flex items-center gap-3 mb-6 cursor-pointer select-none"
+                onClick={() => goProfile(detail.host?.id)}
+                title="프로필 보기"
+              >
                 <Avatar className="w-10 h-10">
                   <AvatarImage src={detail.host.avatar ?? undefined} />
-                  <AvatarFallback>
-                    {(detail.host.name ?? "호")[0]}
-                  </AvatarFallback>
+                  <AvatarFallback>{(detail.host.name ?? "호")[0]}</AvatarFallback>
                 </Avatar>
                 <div className="flex-1">
-                  <span className="font-medium">
-                    {detail.host.name ?? "호스트"}
-                  </span>
-                  <Badge variant="outline" className="ml-2 text-xs">
-                    호스트
-                  </Badge>
+                  <span className="font-medium">{detail.host.name ?? "호스트"}</span>
+                  <Badge variant="outline" className="ml-2 text-xs">호스트</Badge>
                 </div>
               </div>
             )}
@@ -573,9 +575,7 @@ export default function EventDetailPage() {
                       if (!confirm("이 밥약을 삭제(취소)할까요?")) return;
                       try {
                         setBusy(true);
-                        await apiRequest(`/api/events/${detail.id}`, {
-                          method: "DELETE",
-                        });
+                        await apiRequest(`/api/events/${detail.id}`, { method: "DELETE" });
                         router.replace("/");
                       } catch (e: any) {
                         alert(e?.message || "삭제에 실패했습니다.");
@@ -588,20 +588,11 @@ export default function EventDetailPage() {
                   </Button>
                 </>
               ) : isApplied ? (
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  disabled={busy}
-                  onClick={cancelApplication}
-                >
+                <Button variant="outline" className="w-full" disabled={busy} onClick={cancelApplication}>
                   신청 취소
                 </Button>
               ) : (
-                <Button
-                  className="w-full"
-                  disabled={busy}
-                  onClick={applyToEvent}
-                >
+                <Button className="w-full" disabled={busy} onClick={applyToEvent}>
                   참여하기
                 </Button>
               )}
@@ -612,23 +603,22 @@ export default function EventDetailPage() {
         {/* 참여자 + 채팅방 버튼 */}
         <Card className="mb-6">
           <CardHeader>
-            <CardTitle className="text-lg">
-              참여자 ({detail.participants.length}명)
-            </CardTitle>
+            <CardTitle className="text-lg">참여자 ({detail.participants.length}명)</CardTitle>
           </CardHeader>
           <CardContent>
             {detail.participants.length === 0 ? (
-              <div className="text-sm text-muted-foreground">
-                아직 참여자가 없습니다.
-              </div>
+              <div className="text-sm text-muted-foreground">아직 참여자가 없습니다.</div>
             ) : (
               <div className="space-y-3">
                 {detail.participants.map((p, idx) => {
                   const displayName = p.name ?? p.nickname ?? "사용자";
+                  const uid = p.id;
                   return (
                     <div
-                      key={String(p.id ?? idx)}
-                      className="flex items-center gap-3"
+                      key={String(uid ?? idx)}
+                      className="flex items-center gap-3 cursor-pointer select-none"
+                      onClick={() => goProfile(uid)}
+                      title="프로필 보기"
                     >
                       <Avatar className="w-8 h-8">
                         <AvatarImage src={p.avatar ?? undefined} />
@@ -646,10 +636,7 @@ export default function EventDetailPage() {
             {/* ★ 밥약 신청자만 채팅방 입장 버튼 */}
             {isApplied && (
               <div className="mt-4">
-                <Button
-                  className="w-full"
-                  onClick={() => router.push(`/chats/${detail.id}`)}
-                >
+                <Button className="w-full" onClick={() => router.push(`/chats/${detail.id}`)}>
                   채팅방 입장하기
                 </Button>
               </div>
@@ -660,9 +647,7 @@ export default function EventDetailPage() {
         {/* 댓글 */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">
-              댓글 ({comments.length}개)
-            </CardTitle>
+            <CardTitle className="text-lg">댓글 ({comments.length}개)</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-2 mb-4">
@@ -672,11 +657,7 @@ export default function EventDetailPage() {
                 onChange={(e) => setNewComment(e.target.value)}
                 rows={2}
               />
-              <Button
-                size="sm"
-                onClick={createComment}
-                disabled={posting || !newComment.trim()}
-              >
+              <Button size="sm" onClick={createComment} disabled={posting || !newComment.trim()}>
                 {posting ? "작성 중..." : "댓글 작성"}
               </Button>
             </div>
@@ -685,22 +666,28 @@ export default function EventDetailPage() {
 
             <div className="space-y-4">
               {comments.map((c) => {
-                const canDelete =
-                  meId != null &&
-                  c.creatorId != null &&
-                  Number(meId) === Number(c.creatorId);
+                const canDelete = meId != null && c.creatorId != null && Number(meId) === Number(c.creatorId);
+                const uid = c.user?.id;
                 return (
                   <div key={String(c.id)} className="flex gap-3">
-                    <Avatar className="w-8 h-8">
-                      <AvatarImage src={c.user?.avatar ?? undefined} />
-                      <AvatarFallback>
-                        {(c.user?.name ?? "유")[0]}
-                      </AvatarFallback>
-                    </Avatar>
+                    <div
+                      className="flex-shrink-0 cursor-pointer select-none"
+                      onClick={() => goProfile(uid)}
+                      title="프로필 보기"
+                    >
+                      <Avatar className="w-8 h-8">
+                        <AvatarImage src={c.user?.avatar ?? undefined} />
+                        <AvatarFallback>{(c.user?.name ?? "유")[0]}</AvatarFallback>
+                      </Avatar>
+                    </div>
                     <div className="flex-1">
                       <div className="flex items-center justify-between mb-1">
                         <div className="flex items-center gap-2">
-                          <span className="font-medium text-sm">
+                          <span
+                            className="font-medium text-sm cursor-pointer select-none"
+                            onClick={() => goProfile(uid)}
+                            title="프로필 보기"
+                          >
                             {c.user?.name}
                           </span>
                           <span className="text-xs text-muted-foreground">
@@ -720,19 +707,13 @@ export default function EventDetailPage() {
                           </Button>
                         )}
                       </div>
-                      <p className="text-sm whitespace-pre-wrap">
-                        {c.content}
-                      </p>
+                      <p className="text-sm whitespace-pre-wrap">{c.content}</p>
                     </div>
                   </div>
                 );
               })}
 
-              {comments.length === 0 && (
-                <div className="text-sm text-muted-foreground">
-                  아직 댓글이 없습니다.
-                </div>
-              )}
+              {comments.length === 0 && <div className="text-sm text-muted-foreground">아직 댓글이 없습니다.</div>}
             </div>
           </CardContent>
         </Card>

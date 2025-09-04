@@ -1,463 +1,354 @@
 // app/profile/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { ArrowLeft, Edit, Star, MapPin, Users, LogOut, LogIn } from "lucide-react";
-import { authAPI, reviewAPI, eventAPI } from "@/lib/api";
+import { ArrowLeft, Star, MapPin, Calendar, Users, Flag } from "lucide-react";
+import { apiRequest } from "@/lib/api";
 
-/* ================= 화면용 타입 ================= */
-type Profile = {
-  id: number | null;
-  name: string;
-  avatar?: string | null;
-  statusMessage?: string | null;
-  location?: string | null;
-  rating?: number | null;
-  completedMeals?: number | null;
-  hostedMeals?: number | null;
-  bio?: string | null;
-};
-
+/* ========= Types ========= */
 type Review = {
   id: number | string;
-  reviewerName: string;
-  reviewerAvatar?: string | null;
   rating: number;
-  createdAt: string; // ISO
-  comment: string;
-  eventTitle?: string | null;
+  date: string;
+  comment?: string | null;
 };
-
-type MyEvent = {
+type UiEvent = {
   id: number | string;
   title: string;
-  date: string; // ISO
+  date: string;            // startAt
+  end?: string | null;     // endAt (상태 계산 보강용)
   participants: number;
   status: "upcoming" | "completed";
+  isHost: boolean;
+};
+type MeLite = { id: number; name: string; avatar?: string | null };
+
+/* ========= Utils ========= */
+const FALLBACK_NAME = "이름 없음";
+const asArray = (d: any): any[] =>
+  Array.isArray(d) ? d
+  : Array.isArray(d?.items) ? d.items
+  : Array.isArray(d?.data?.items) ? d.data.items
+  : Array.isArray(d?.data) ? d.data
+  : [];
+
+const toNum = (v: any): number | null => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 };
 
-/* ================= 유틸/매퍼 ================= */
-function mapProfile(p: any): Profile {
-  const rawId =
-    p?.id ?? p?.userId ?? p?.user_id ?? p?.user?.id ?? p?.user?.userId ?? p?.user?.user_id ?? null;
-  const idNum = rawId != null && !Number.isNaN(Number(rawId)) ? Number(rawId) : null;
-
-  return {
-    id: idNum,
-    name: p?.nickname ?? p?.name ?? "사용자",
-    avatar: p?.profile_img ?? p?.avatar ?? p?.avatarUrl ?? null,
-    statusMessage: p?.statusMessage ?? p?.status_message ?? null,
-    location: p?.location ?? null,
-    rating: p?.rating ?? null,
-    completedMeals: p?.completedMeals ?? p?.completed_meals ?? null,
-    hostedMeals: p?.hostedMeals ?? p?.hosted_meals ?? null,
-    bio: p?.bio ?? null,
-  };
-}
-
-function mapReview(r: any): Review {
-  return {
-    id: r?.id ?? r?._id ?? String(Math.random()),
-    reviewerName:
-      r?.reviewerName ??
-      r?.reviewer?.nickname ??
-      r?.reviewer?.name ??
-      r?.fromUser?.nickname ??
-      "익명",
-    reviewerAvatar: r?.reviewerAvatar ?? r?.reviewer?.avatar ?? r?.reviewer?.profile_img ?? null,
-    rating: Number(r?.score ?? r?.rating ?? 0),
-    createdAt: r?.created_at ?? r?.createdAt ?? new Date().toISOString(),
-    comment: r?.comment ?? r?.content ?? "",
-    eventTitle: r?.eventTitle ?? r?.event?.title ?? null,
-  };
-}
-
-function asArray(data: any): any[] {
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.items)) return data.items;
-  if (Array.isArray(data?.data?.items)) return data.data.items;
-  if (Array.isArray(data?.success?.items)) return data.success.items;
-  if (Array.isArray(data?.events)) return data.events;
-  if (Array.isArray(data?.data)) return data.data;
-  if (Array.isArray(data?.results)) return data.results;
-  if (Array.isArray(data?.success?.lists)) return data.success.lists;
-  return [];
-}
-
-function computeStatus(startISO?: string | null, endISO?: string | null): "upcoming" | "completed" {
+// end가 있으면 end 기준, 없으면 start가 현재 이전이면 완료로 취급
+const computeStatus = (start?: string | null, end?: string | null): "upcoming" | "completed" => {
   const now = Date.now();
-  const end = endISO ? Date.parse(endISO) : NaN;
-  const start = startISO ? Date.parse(startISO) : NaN;
-  if (!Number.isNaN(end)) return end < now ? "completed" : "upcoming";
-  if (!Number.isNaN(start)) return start < now ? "completed" : "upcoming";
+  const e = end ? Date.parse(end) : NaN;
+  const s = start ? Date.parse(start) : NaN;
+  if (Number.isFinite(e)) return e < now ? "completed" : "upcoming";
+  if (Number.isFinite(s)) return s < now ? "completed" : "upcoming";
   return "upcoming";
-}
+};
 
-function mapMyEventDetail(detail: any): MyEvent {
-  const startISO = detail?.startISO ?? detail?.start_at ?? detail?.startAt ?? null;
-  const endISO = detail?.endISO ?? detail?.end_at ?? detail?.endAt ?? null;
-
-  const baseCount =
-    Number(
-      detail?.participantsCount ??
-        detail?.participants_count ??
-        detail?.currentParticipants ??
-        detail?.attendeesCount ??
-        0
-    ) ||
-    (Array.isArray(detail?.participants) ? detail.participants.length : 0) ||
-    0;
-
-  const hostId = detail?.creatorId ?? detail?.hostId ?? detail?.ownerId ?? detail?.user_id ?? null;
-  const attendeeIds = Array.isArray(detail?.participants)
-    ? detail.participants.map((p: any) => p?.id ?? p?.userId ?? p?.user_id).filter((v: any) => v != null)
-    : [];
-  const hostAlreadyIncluded = hostId != null && attendeeIds.includes(hostId);
-  const participants = baseCount + (hostId != null && !hostAlreadyIncluded ? 1 : 0);
-
-  return {
-    id: detail?.id ?? detail?.eventId ?? String(Math.random()),
-    title: detail?.title ?? "제목 없음",
-    date: (typeof startISO === "string" && startISO) || new Date().toISOString(),
-    participants,
-    status: computeStatus(startISO, endISO),
-  };
-}
-
-/* ================= 페이지 ================= */
-export default function ProfilePage() {
+export default function MyProfilePage() {
   const router = useRouter();
 
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    return localStorage.getItem("isLoggedIn") === "true";
-  });
-
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const [me, setMe] = useState<MeLite | null>(null);
+  const [events, setEvents] = useState<UiEvent[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
-  const [recentEvents, setRecentEvents] = useState<MyEvent[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  const ratingAvg = useMemo(() => {
+    if (!reviews.length) return 0;
+    const s = reviews.reduce((a, b) => a + (b.rating || 0), 0);
+    return Math.round((s / reviews.length) * 10) / 10;
+  }, [reviews]);
+
+  const completedCount = useMemo(
+    () => events.filter((e) => e.status === "completed").length,
+    [events]
+  );
+  const hostedCount = useMemo(() => events.filter((e) => e.isHost).length, [events]);
 
   useEffect(() => {
-    const load = async () => {
-      if (!isLoggedIn) {
-        setIsLoading(false);
-        return;
-      }
-      setIsLoading(true);
-      setError("");
+    let canceled = false;
 
+    (async () => {
       try {
-        // 1) 내 프로필
-        const pr = await authAPI.getProfile().catch(() => null);
-        const rawProfile = (pr as any)?.profile ?? pr;
-        if (!rawProfile) {
-          setProfile(null);
-          setReviews([]);
-          setRecentEvents([]);
-          setError("로그인 세션이 유효하지 않거나 프로필을 불러오지 못했습니다.");
-          return;
+        setLoading(true);
+        setErr(null);
+
+        // 내 정보는 localStorage에서만 읽음 (백엔드 /users/me 미사용)
+        let myId: number | null = null;
+        let myName: string | null = null;
+        let myAvatar: string | null = null;
+        try {
+          const ls = JSON.parse(localStorage.getItem("user") || "null");
+          myId = toNum(ls?.id);
+          myName = ls?.nickname ?? ls?.name ?? null;
+          myAvatar = ls?.avatar ?? null;
+        } catch {}
+        if (!Number.isFinite(myId as number)) throw new Error("로그인 정보가 없습니다.");
+
+        // 내가 주최/참여한 밥약
+        const ev: UiEvent[] = [];
+        for (let page = 1; page <= 60; page++) {
+          const r: any = await apiRequest(`/api/events?userId=${myId}&page=${page}&size=50`).catch(() => null);
+          const items = asArray(r);
+          if (!items.length) break;
+
+          for (const it of items) {
+            const start = it.startISO ?? it.start_at ?? it.startAt ?? null;
+            const end   = it.endISO   ?? it.end_at   ?? it.endAt   ?? null;
+            const participants =
+              toNum(it.participantsCount) ??
+              toNum(it.participants_count) ??
+              toNum(it.currentParticipants) ??
+              0;
+            const creatorId =
+              toNum(it.creatorId) ?? toNum(it.creator_id) ?? toNum(it.creator?.id) ?? null;
+
+            ev.push({
+              id: it.id ?? it.eventId ?? Math.random().toString(36).slice(2),
+              title: it.title ?? "제목 없음",
+              date: typeof start === "string" ? start : new Date().toISOString(),
+              end,
+              participants: participants ?? 0,
+              status: computeStatus(start, end),
+              isHost: Number(creatorId) === Number(myId),
+            });
+          }
+
+          const pg = r?.data?.pagination ?? r?.pagination ?? {};
+          const hasNext = typeof pg?.hasNext === "boolean" ? pg.hasNext : (pg?.page ?? 1) < (pg?.totalPages ?? 1);
+          if (!hasNext) break;
         }
-        const mapped = mapProfile(rawProfile);
-        setProfile(mapped);
 
-        // 2) 받은 리뷰
-        if (typeof mapped.id === "number" && Number.isFinite(mapped.id)) {
-          const rr = await reviewAPI.getUserReviews(mapped.id, 1, 10).catch(() => null);
-          setReviews(asArray(rr).map(mapReview));
-        } else {
-          setReviews([]);
+        // 내가 받은 리뷰
+        const rv: Review[] = [];
+        for (let page = 1; page <= 200; page++) {
+          let res: any = await apiRequest(`/api/reviews/${myId}?page=${page}&take=50`).catch(() => null);
+          if (!res || (!Array.isArray(res?.items) && !Array.isArray(res?.data?.items))) {
+            res = await apiRequest(`/api/reviews/${myId}?page=${page}&size=50`).catch(() => null);
+          }
+          const items = asArray(res);
+          if (!items.length) break;
+
+          for (const it of items) {
+            rv.push({
+              id: it.id ?? `${page}-${rv.length}`,
+              rating: Number(it.score ?? it.rating ?? 0),
+              date: it.createdAt ?? it.created_at ?? new Date().toISOString(),
+              comment: it.comment ?? it.content ?? null,
+            });
+          }
+
+          const take = Number(res?.pagination?.take ?? res?.pagination?.size ?? 50);
+          if (items.length < take) break;
         }
 
-        // 3) 내가 참여한/주최한 밥약
-        const meRes = await eventAPI.getMyEvents().catch(() => null);
-        const rawApps = asArray(meRes);
-        const ids = Array.from(
-          new Set(rawApps.map((x: any) => x?.eventId ?? x?.event_id ?? x?.id).filter(Boolean))
-        );
-        const details = await Promise.all(ids.map((id) => eventAPI.getEvent(id).catch(() => null)));
-        const events = details
-          .filter(Boolean)
-          .map(mapMyEventDetail)
-          .sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
-
-        setRecentEvents(events);
+        if (!canceled) {
+          setMe({
+            id: myId as number,
+            name: myName ?? `${FALLBACK_NAME} (ID: ${myId})`,
+            avatar: myAvatar ?? null,
+          });
+          setEvents(ev.sort((a, b) => Date.parse(b.date) - Date.parse(a.date)));
+          setReviews(rv.sort((a, b) => Date.parse(b.date) - Date.parse(a.date)));
+        }
       } catch (e: any) {
-        setError(e?.message || "프로필 정보를 불러오는 중 오류가 발생했습니다.");
-        setProfile(null);
-        setReviews([]);
-        setRecentEvents([]);
+        if (!canceled) {
+          setErr(e?.message || "프로필을 불러오지 못했습니다.");
+          setMe(null);
+          setEvents([]);
+          setReviews([]);
+        }
       } finally {
-        setIsLoading(false);
+        if (!canceled) setLoading(false);
       }
-    };
+    })();
 
-    load();
-  }, [isLoggedIn]);
+    return () => { canceled = true; };
+  }, []);
 
-  const handleAuthToggle = async () => {
-    if (isLoggedIn) {
-      try {
-        await authAPI.logout();
-      } catch {
-      } finally {
-        localStorage.removeItem("isLoggedIn");
-        localStorage.removeItem("authToken");
-        localStorage.removeItem("user");
-        setIsLoggedIn(false);
-        setProfile(null);
-        setReviews([]);
-        setRecentEvents([]);
-        router.push("/login");
-      }
-    } else {
-      router.push("/login");
-    }
-  };
-
-  if (isLoading) {
+  if (loading) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
-          <img src="/bobple-mascot.png" alt="밥플 마스코트" className="w-16 h-16 mx-auto mb-4 animate-bounce" />
-          <p className="text-muted-foreground">프로필을 불러오는 중...</p>
-        </div>
+      <div className="min-h-screen bg-background flex items-center justify-center text-muted-foreground">
+        불러오는 중...
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-background">
+      {/* Header */}
       <header className="sticky top-0 z-50 bg-card border-b border-border">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center gap-4">
               <Button variant="ghost" size="sm" onClick={() => router.back()}>
                 <ArrowLeft className="w-4 h-4" />
               </Button>
-              <h1 className="text-xl font-semibold">내 프로필</h1>
+              <h1 className="text-xl font-semibold">{me?.name ?? "내 프로필"}</h1>
             </div>
-            <div className="flex items-center space-x-2">
-              <Button
-                variant={isLoggedIn ? "outline" : "default"}
-                size="sm"
-                onClick={handleAuthToggle}
-                className="flex items-center space-x-1"
-              >
-                {isLoggedIn ? (
-                  <>
-                    <LogOut className="w-4 h-4" />
-                    <span>로그아웃</span>
-                  </>
-                ) : (
-                  <>
-                    <LogIn className="w-4 h-4" />
-                    <span>로그인</span>
-                  </>
-                )}
+
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => router.push("/profile/edit")}>
+                프로필 수정
               </Button>
-              {isLoggedIn && (
-                <Button variant="outline" size="sm" onClick={() => router.push("/profile/edit")}>
-                  <Edit className="w-4 h-4 mr-1" />
-                  <span>수정</span>
-                </Button>
-              )}
+              <Button variant="ghost" size="sm" title="신고">
+                <Flag className="w-4 h-4" />
+              </Button>
             </div>
           </div>
         </div>
       </header>
 
       <div className="container mx-auto px-4 py-6 max-w-4xl">
-        {!isLoggedIn ? (
-          <div className="text-center py-12">
-            <img src="/bobple-mascot.png" alt="밥플 마스코트" className="w-32 h-32 mx-auto mb-6 animate-bounce" />
-            <h2 className="text-2xl font-bold mb-4">로그인이 필요해요!</h2>
-            <p className="text-muted-foreground mb-6">밥플에서 새로운 사람들과 맛있는 식사를 함께해보세요</p>
-            <Button onClick={handleAuthToggle} size="lg">
-              <LogIn className="w-4 h-4 mr-2" />
-              로그인하기
-            </Button>
+        {err && (
+          <div className="mb-4 p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
+            {err}
           </div>
-        ) : profile == null ? (
-          <div className="text-center py-12">
-            {error && (
-              <div className="mb-6 p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md inline-block">
-                {error}
-              </div>
-            )}
-            <div className="space-x-2">
-              <Button variant="outline" onClick={() => router.refresh()}>
-                다시 시도
-              </Button>
-              <Button onClick={() => router.push("/login")}>다시 로그인</Button>
-            </div>
-          </div>
-        ) : (
-          <>
-            {error && (
-              <div className="mb-6 p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
-                {error}
-              </div>
-            )}
+        )}
 
-            {/* 프로필 카드 */}
-            <Card className="mb-6">
-              <CardContent className="pt-6">
-                <div className="flex flex-col md:flex-row items-center md:items-start gap-6">
-                  <Avatar className="w-24 h-24">
-                    <AvatarImage src={profile.avatar || "/placeholder.svg"} />
-                    <AvatarFallback className="text-2xl">{profile.name?.[0] || "U"}</AvatarFallback>
-                  </Avatar>
+        {/* 프로필 카드 */}
+        <Card className="mb-6">
+          <CardContent className="pt-6">
+            <div className="flex flex-col md:flex-row items-center md:items-start gap-6">
+              <Avatar className="w-24 h-24">
+                <AvatarImage src={me?.avatar || "/placeholder.svg"} />
+                <AvatarFallback className="text-2xl">{(me?.name ?? "U")[0]}</AvatarFallback>
+              </Avatar>
 
-                  <div className="flex-1 text-center md:text-left">
-                    <h2 className="text-2xl font-bold mb-2">{profile.name}</h2>
-                    {profile.statusMessage && (
-                      <p className="text-sm text-muted-foreground mb-3 italic">"{profile.statusMessage}"</p>
-                    )}
-                    <div className="flex items-center justify-center md:justify-start gap-4 text-sm text-muted-foreground mb-3">
-                      <div className="flex items-center">
-                        <MapPin className="w-4 h-4 mr-1" />
-                        {profile.location || "위치 정보 없음"}
-                      </div>
+              <div className="flex-1 text-center md:text-left">
+                <h2 className="text-2xl font-bold mb-2">{me?.name ?? FALLBACK_NAME}</h2>
+
+                <div className="flex items-center justify-center md:justify-start gap-6 mb-4">
+                  <div className="text-center">
+                    <div className="flex items-center justify-center gap-1">
+                      <Star className="w-4 h-4 fill-current text-yellow-500" />
+                      <span className="font-semibold">{ratingAvg}</span>
                     </div>
-
-                    <div className="flex items-center justify-center md:justify-start gap-6 mb-4">
-                      <div className="text-center">
-                        <div className="flex items-center justify-center gap-1">
-                          <Star className="w-4 h-4 fill-current text-yellow-500" />
-                          <span className="font-semibold">{profile.rating ?? 0}</span>
-                        </div>
-                        <span className="text-xs text-muted-foreground">{reviews.length}개 리뷰</span>
-                      </div>
-                      <div className="text-center">
-                        <div className="font-semibold">{profile.completedMeals ?? 0}</div>
-                        <span className="text-xs text-muted-foreground">완료한 밥약</span>
-                      </div>
-                      <div className="text-center">
-                        <div className="font-semibold">{profile.hostedMeals ?? 0}</div>
-                        <span className="text-xs text-muted-foreground">주최한 밥약</span>
-                      </div>
-                    </div>
-
-                    <p className="text-muted-foreground leading-relaxed">{profile.bio || "자기소개가 없습니다."}</p>
+                    <span className="text-xs text-muted-foreground">{reviews.length}개 리뷰</span>
+                  </div>
+                  <div className="text-center">
+                    <div className="font-semibold">{completedCount}</div>
+                    <span className="text-xs text-muted-foreground">완료한 밥약</span>
+                  </div>
+                  <div className="text-center">
+                    <div className="font-semibold">{hostedCount}</div>
+                    <span className="text-xs text-muted-foreground">주최한 밥약</span>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
-            {/* 밥약 / 리뷰 탭 */}
-            <Tabs defaultValue="events" className="space-y-4">
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="events">참여한 밥약</TabsTrigger>
-                <TabsTrigger value="reviews">받은 리뷰</TabsTrigger>
-              </TabsList>
+        {/* 최근 밥약 / 받은 리뷰 */}
+        <Tabs defaultValue="events" className="space-y-4">
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="events">최근 밥약</TabsTrigger>
+            <TabsTrigger value="reviews">받은 리뷰</TabsTrigger>
+          </TabsList>
 
-              {/* 참여한 밥약 */}
-              <TabsContent value="events" className="space-y-4">
-                {recentEvents.length === 0 ? (
-                  <div className="text-center py-8">
-                    <p className="text-muted-foreground">참여한 밥약이 없습니다.</p>
-                  </div>
-                ) : (
-                  recentEvents.map((event) => (
-                    <Card
-                      key={event.id}
-                      className="transition-shadow hover:shadow-md"
-                      onClick={() => router.push(`/events/${event.id}`)}
-                    >
-                      <CardContent className="pt-4">
-                        <div className="flex items-center justify-between">
-                          <div className="flex-1">
-                            <h3 className="font-semibold mb-1">{event.title}</h3>
-                            <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                              <span>{new Date(event.date).toLocaleDateString("ko-KR")}</span>
-                              <div className="flex items-center">
-                                <Users className="w-3 h-3 mr-1" />
-                                {event.participants}명 참여
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col items-end gap-2">
-                            <Badge variant={event.status === "completed" ? "secondary" : "default"}>
-                              {event.status === "completed" ? "완료" : "예정"}
-                            </Badge>
-
-                            {/* 완료된 경우에만 리뷰 작성 버튼 */}
-                            {event.status === "completed" && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={(e) => {
-                                  e.stopPropagation(); // 카드 클릭 방지
-                                  router.push(`/reviews/write?eventId=${event.id}`);
-                                }}
-                              >
-                                리뷰 작성
-                              </Button>
-                            )}
+          {/* 최근 밥약 */}
+          <TabsContent value="events" className="space-y-4">
+            {events.length === 0 ? (
+              <div className="text-sm text-muted-foreground">최근 밥약이 없습니다.</div>
+            ) : (
+              events.map((ev) => (
+                <Card
+                  key={ev.id}
+                  className="hover:shadow-md transition-shadow cursor-pointer"
+                  onClick={() => router.push(`/events/${ev.id}`)}
+                >
+                  <CardContent className="pt-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <h3 className="font-semibold mb-1">
+                          {ev.title}
+                          {ev.isHost && <Badge variant="outline" className="ml-2">주최</Badge>}
+                        </h3>
+                        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                          <span>{new Date(ev.date).toLocaleDateString("ko-KR")}</span>
+                          <div className="flex items-center">
+                            <Users className="w-3 h-3 mr-1" />
+                            {ev.participants}명 참여
                           </div>
                         </div>
-                      </CardContent>
-                    </Card>
-                  ))
-                )}
-              </TabsContent>
+                      </div>
 
-              {/* 받은 리뷰 */}
-              <TabsContent value="reviews" className="space-y-4">
-                {reviews.length === 0 ? (
-                  <div className="text-center py-8">
-                    <p className="text-muted-foreground">받은 리뷰가 없습니다.</p>
-                  </div>
-                ) : (
-                  reviews.map((review) => (
-                    <Card key={review.id}>
-                      <CardContent className="pt-4">
-                        <div className="flex items-start gap-3">
-                          <Avatar className="w-10 h-10">
-                            <AvatarImage src={review.reviewerAvatar || "/placeholder.svg"} />
-                            <AvatarFallback>{review.reviewerName?.[0] || "U"}</AvatarFallback>
-                          </Avatar>
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className="font-medium">{review.reviewerName}</span>
-                              <div className="flex items-center">
-                                {[...Array(5)].map((_, i) => (
-                                  <Star
-                                    key={i}
-                                    className={`w-3 h-3 ${
-                                      i < review.rating ? "fill-current text-yellow-500" : "text-gray-300"
-                                    }`}
-                                  />
-                                ))}
-                              </div>
-                              <span className="text-xs text-muted-foreground">
-                                {new Date(review.createdAt).toLocaleDateString("ko-KR")}
-                              </span>
-                            </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={ev.status === "completed" ? "secondary" : "default"}>
+                          {ev.status === "completed" ? "완료" : "예정"}
+                        </Badge>
 
-                            {review.eventTitle && (
-                              <p className="text-xs text-muted-foreground mb-1">{review.eventTitle}</p>
-                            )}
-                            <p className="text-sm text-muted-foreground">{review.comment}</p>
-                          </div>
+                        {/* ✅ 내 프로필: 완료된 밥약이면 "리뷰 작성" 버튼 노출 */}
+                        {ev.status === "completed" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              router.push(`/reviews/write?eventId=${ev.id}`);
+                            }}
+                          >
+                            리뷰 작성
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))
+            )}
+          </TabsContent>
+
+          {/* 받은 리뷰 */}
+          <TabsContent value="reviews" className="space-y-4">
+            {reviews.length === 0 ? (
+              <div className="text-sm text-muted-foreground">받은 리뷰가 없습니다.</div>
+            ) : (
+              reviews.map((rv) => (
+                <Card key={rv.id}>
+                  <CardContent className="pt-4">
+                    <div className="flex items-start gap-3">
+                      <Avatar className="w-10 h-10">
+                        <AvatarImage src={"/placeholder.svg"} />
+                        <AvatarFallback>익</AvatarFallback>
+                      </Avatar>
+
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-medium">익명</span>
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(rv.date).toLocaleDateString("ko-KR")}
+                          </span>
                         </div>
-                      </CardContent>
-                    </Card>
-                  ))
-                )}
-              </TabsContent>
-            </Tabs>
-          </>
-        )}
+
+                        <div className="flex items-center gap-1 mb-2">
+                          {[...Array(5)].map((_, i) => (
+                            <Star
+                              key={i}
+                              className={`w-3 h-3 ${i < rv.rating ? "fill-current text-yellow-500" : "text-gray-300"}`}
+                            />
+                          ))}
+                        </div>
+
+                        {rv.comment && <p className="text-sm text-muted-foreground">{rv.comment}</p>}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );

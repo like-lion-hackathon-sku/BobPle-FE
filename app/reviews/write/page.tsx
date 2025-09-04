@@ -5,93 +5,85 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Star, Users, ArrowLeft } from "lucide-react";
-import { apiRequest, eventAPI, authAPI, reviewAPI } from "@/lib/api";
+import { apiRequest, eventAPI, authAPI, reviewAPI, getCurrentUser } from "@/lib/api";
 
-/* ========= 화면 타입 ========= */
-type Participant = {
-  id: number | string;
-  name: string;
-  avatar?: string | null;
-};
-
+/* ===== 화면 타입 ===== */
+type Participant = { id: number | string; name: string; avatar?: string | null };
 type EventDetailLite = {
   id: number | string;
   title: string;
-  startISO?: string | null;
-  endISO?: string | null;
-  participants: Participant[];
+  participants: any[]; // getEvent() 원본 보관
+  creatorId: number | string | null;
+  creatorNickname: string | null;
 };
 
-/* ========= 유틸 ========= */
-function asArray<T = any>(data: any): T[] {
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.participants)) return data.participants;
-  if (Array.isArray(data?.data)) return data.data;
-  if (Array.isArray(data?.results)) return data.results;
-  return [];
-}
-
+/* ===== 화면용 매핑 (정확 경로만) ===== */
 function mapParticipant(p: any): Participant {
-  const id =
-    p?.id ?? p?.userId ?? p?.user_id ?? p?.user?.id ?? p?.user?.userId ?? p?.user?.user_id;
-  const name = p?.nickname ?? p?.name ?? p?.user?.nickname ?? p?.user?.name ?? "사용자";
-  const avatar = p?.avatar ?? p?.profile_img ?? p?.user?.avatar ?? p?.user?.profile_img ?? null;
+  const id = p?.user?.id ?? p?.userId ?? p?.user_id ?? p?.id;
+  const name = p?.user?.nickname ?? p?.user?.name ?? p?.nickname ?? p?.name ?? "사용자";
+  const avatar =
+    p?.user?.avatar ?? p?.user?.profile_img ?? p?.avatar ?? p?.profile_img ?? null;
   return { id, name, avatar };
 }
 
-function mapEventDetail(raw: any): EventDetailLite {
-  const id = raw?.id ?? raw?.eventId ?? "event";
-  const title = raw?.title ?? raw?.name ?? "제목 없음";
-  const startISO = raw?.startISO ?? raw?.start_at ?? raw?.startAt ?? null;
-  const endISO = raw?.endISO ?? raw?.end_at ?? raw?.endAt ?? null;
-  const participants = asArray(raw?.participants).map(mapParticipant);
-  return { id, title, startISO, endISO, participants };
+/* ===== 본인인지 판별 (원본 participants 원소 기준) ===== */
+function isMeParticipant(
+  x: any,
+  meId: number | string | null,
+  meNickname: string | null
+) {
+  const meIdStr = meId != null ? String(meId) : null;
+  const meName = meNickname?.trim() || null;
+
+  const ids = [
+    x?.id,
+    x?.userId,
+    x?.user_id,
+    x?.user?.id,
+    x?.user?.userId,
+    x?.user?.user_id,
+  ]
+    .filter((v) => v != null)
+    .map((v) => String(v));
+
+  if (meIdStr && ids.includes(meIdStr)) return true;
+
+  const pname =
+    x?.user?.nickname ?? x?.user?.name ?? x?.nickname ?? x?.name ?? null;
+  if (meName && pname && String(pname) === meName) return true;
+
+  return false;
 }
 
-/* ========= 페이지 ========= */
 export default function ReviewWritePage() {
   const router = useRouter();
   const qs = useSearchParams();
-
-  const eventIdStr = qs.get("eventId");      // 필수
-  const presetToUserId = qs.get("toUserId"); // 선택
+  const eventIdStr = qs.get("eventId");
 
   const [meId, setMeId] = useState<number | string | null>(null);
+  const [meNickname, setMeNickname] = useState<string | null>(null);
+
   const [detail, setDetail] = useState<EventDetailLite | null>(null);
-
-  const [toUserId, setToUserId] = useState<string>("");
-  const [rating, setRating] = useState<number>(0);
-  const [content, setContent] = useState<string>("");
-
+  const [ratings, setRatings] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [doneCount, setDoneCount] = useState<number>(0);
 
-  /* 내 아이디 */
+  /* ── 내 정보 (getProfile + localStorage 보강) ─────────── */
   useEffect(() => {
     (async () => {
-      try {
-        const me = await authAPI.getProfile().catch(() => null);
-        const id =
-          me?.id ??
-          me?.userId ??
-          me?.user_id ??
-          me?.profile?.id ??
-          me?.profile?.userId ??
-          me?.profile?.user_id ??
-          null;
-        setMeId(id ?? null);
-      } catch {
-        setMeId(null);
-      }
+      const me = (await authAPI.getProfile().catch(() => null)) ?? null;
+      const cached = getCurrentUser();
+      setMeId(me?.id ?? cached?.id ?? null);
+      setMeNickname(me?.nickname ?? me?.name ?? cached?.nickname ?? cached?.name ?? null);
     })();
   }, []);
 
-  /* 이벤트 상세 */
+  /* ── 이벤트 상세 (정확 필드만 사용 + null 가드) ─────────── */
   useEffect(() => {
     (async () => {
       if (!eventIdStr) {
@@ -102,58 +94,114 @@ export default function ReviewWritePage() {
       setLoading(true);
       setErr(null);
       try {
-        const eid = Number.isNaN(Number(eventIdStr)) ? eventIdStr : Number(eventIdStr);
-        const raw = await eventAPI.getEvent(eid).catch(() => null);
+        const eid = Number.isNaN(Number(eventIdStr)) ? String(eventIdStr) : Number(eventIdStr);
+        const raw = await eventAPI.getEvent(eid).catch(() => null as const);
         if (!raw) throw new Error("이벤트 정보를 불러오지 못했습니다.");
-        const mapped = mapEventDetail(raw);
-        setDetail(mapped);
 
-        if (presetToUserId) setToUserId(String(presetToUserId));
+        const d: EventDetailLite = {
+          id: raw.id,
+          title: raw.title,
+          participants: Array.isArray(raw.participants) ? raw.participants : [],
+          creatorId: (raw as any).creatorId ?? null,
+          creatorNickname: (raw as any).creatorNickname ?? null,
+        };
+        setDetail(d);
       } catch (e: any) {
         setErr(e?.message || "페이지 로드 중 오류가 발생했습니다.");
       } finally {
         setLoading(false);
       }
     })();
-  }, [eventIdStr, presetToUserId]);
+  }, [eventIdStr]);
 
-  const selectableParticipants = useMemo(() => {
+  /* ── 참가자(원본에서 본인 제외) + 호스트 보강 ──────────── */
+  const targetParticipants = useMemo(() => {
     if (!detail) return [];
-    return detail.participants.filter((p) => String(p.id) !== String(meId));
-  }, [detail, meId]);
 
-  const canSubmit = useMemo(() => {
-    const inRange = Number.isFinite(rating) && rating >= 0 && rating <= 5;
-    return !!eventIdStr && !!toUserId && inRange && content.trim().length > 0 && !submitting;
-  }, [eventIdStr, toUserId, rating, content, submitting]);
+    // 1) 원본에서 먼저 본인 제외
+    const filteredRaw = detail.participants.filter(
+      (x) => !isMeParticipant(x, meId, meNickname)
+    );
 
-  /* 제출 */
+    // 2) 화면용으로 매핑
+    let mapped = filteredRaw.map(mapParticipant);
+
+    // 3) 호스트 보강 (creatorId/creatorNickname)
+    if (detail.creatorId != null) {
+      const exists = mapped.some((p) => String(p.id) === String(detail.creatorId));
+      if (!exists) {
+        mapped.push({
+          id: detail.creatorId,
+          name: detail.creatorNickname ?? "호스트",
+          avatar: null,
+        });
+      }
+    }
+
+    return mapped.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }, [detail, meId, meNickname]);
+
+  /* ── ratings 초기화/유지 ─────────────────────────────── */
+  useEffect(() => {
+    if (!targetParticipants.length) return;
+    setRatings((prev) => {
+      const next = { ...prev };
+      for (const p of targetParticipants) {
+        const k = String(p.id);
+        if (next[k] == null) next[k] = 0;
+      }
+      return next;
+    });
+  }, [targetParticipants]);
+
+  const ratedEntries = useMemo(
+    () => Object.entries(ratings).filter(([, s]) => Number(s) > 0),
+    [ratings]
+  );
+
+  const canSubmit = useMemo(
+    () => !!eventIdStr && !submitting && ratedEntries.length > 0,
+    [eventIdStr, submitting, ratedEntries.length]
+  );
+
+  const setUserRating = (userId: string | number, score: number) =>
+    setRatings((p) => ({ ...p, [String(userId)]: score }));
+
+  /* ── 저장 (※ eventId 포함) ───────────────────────────── */
   async function handleSubmit() {
     if (!canSubmit) return;
     setSubmitting(true);
     setErr(null);
+    setDoneCount(0);
     try {
-      const payload = {
-        // eventId는 BE가 받지 않으면 생략해도 됨. 필요하면 주석 해제
-        // eventId: Number.isNaN(Number(eventIdStr)) ? String(eventIdStr) : Number(eventIdStr),
-        score: rating,        // ✅ BE 명세: score (0~5)
-        content,              // 선택 필드(받으면 전송)
-      };
+      const eventIdNum = Number(eventIdStr);
+      const useEventId =
+        Number.isFinite(eventIdNum) ? eventIdNum : (detail?.id as number | undefined);
 
-      // reviewAPI 래퍼가 없다면 apiRequest로 직접
       const hasCreate =
         typeof (reviewAPI as any)?.createReview === "function" ||
         typeof (reviewAPI as any)?.write === "function";
 
-      if (hasCreate) {
-        const fn = (reviewAPI as any).createReview ?? (reviewAPI as any).write;
-        await fn(Number(toUserId) || String(toUserId), payload);
-      } else {
-        await apiRequest(`/api/reviews/${encodeURIComponent(String(toUserId))}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
+      const callCreate = async (uid: string, score: number) => {
+        const payload: { score: number; eventId?: number } = { score };
+        if (useEventId != null) payload.eventId = Number(useEventId);
+
+        if (hasCreate) {
+          const fn = (reviewAPI as any).createReview ?? (reviewAPI as any).write;
+          // reviewAPI.createReview: (userId: number, { score, comment?, eventId })
+          await fn(Number(uid), payload);
+        } else {
+          await apiRequest(`/api/reviews/${encodeURIComponent(uid)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+        }
+      };
+
+      for (const [uid, s] of ratedEntries) {
+        await callCreate(uid, Number(s));
+        setDoneCount((n) => n + 1);
       }
 
       router.replace("/profile");
@@ -164,30 +212,10 @@ export default function ReviewWritePage() {
     }
   }
 
+  /* ── 렌더 ───────────────────────────────────────────── */
   if (loading) {
     return (
       <div className="min-h-screen grid place-items-center text-muted-foreground">불러오는 중…</div>
-    );
-  }
-
-  if (!eventIdStr) {
-    return (
-      <div className="min-h-screen grid place-items-center">
-        <Card className="w-full max-w-lg">
-          <CardHeader>
-            <CardTitle>리뷰 작성</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-destructive text-sm">eventId 쿼리가 필요합니다.</p>
-            <div className="mt-4">
-              <Button variant="outline" onClick={() => router.back()}>
-                <ArrowLeft className="w-4 h-4 mr-1" />
-                뒤로가기
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
     );
   }
 
@@ -219,87 +247,53 @@ export default function ReviewWritePage() {
               </div>
             )}
 
-            {/* 대상 선택 */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">리뷰 대상</label>
+            <div className="space-y-3">
+              <div className="text-sm font-medium">참가자별 별점</div>
 
-              {presetToUserId ? (
-                <div className="flex items-center gap-3 p-3 border rounded-md">
-                  {(() => {
-                    const target =
-                      selectableParticipants.find((p) => String(p.id) === String(presetToUserId)) ??
-                      null;
-                    return (
-                      <>
-                        <Avatar className="w-8 h-8">
-                          <AvatarImage src={target?.avatar || "/placeholder.svg"} />
-                          <AvatarFallback>{(target?.name ?? "U").slice(0, 1)}</AvatarFallback>
-                        </Avatar>
-                        <div className="flex-1">
-                          <div className="font-medium">
-                            {target?.name ?? `사용자 #${presetToUserId}`}
-                          </div>
-                          <div className="text-xs text-muted-foreground">ID: {presetToUserId}</div>
-                        </div>
-                      </>
-                    );
-                  })()}
-                </div>
-              ) : (
-                <select
-                  className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-                  value={toUserId}
-                  onChange={(e) => setToUserId(e.target.value)}
-                >
-                  <option value="">대상을 선택하세요</option>
-                  {selectableParticipants.map((p) => (
-                    <option key={String(p.id)} value={String(p.id)}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
+              {targetParticipants.length === 0 && (
+                <div className="text-sm text-muted-foreground">평가할 대상이 없습니다.</div>
               )}
-            </div>
 
-            {/* 별점 */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">평점</label>
-              <div className="flex items-center gap-2">
-                {[1, 2, 3, 4, 5].map((i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => setRating(i)}
-                    className="p-1"
-                    aria-label={`${i}점`}
-                  >
-                    <Star
-                      className={`w-6 h-6 ${
-                        i <= rating ? "fill-current text-yellow-500" : "text-gray-300"
-                      }`}
-                    />
-                  </button>
-                ))}
-                <span className="text-sm text-muted-foreground ml-1">{rating} / 5</span>
-              </div>
-            </div>
+              {targetParticipants.map((p) => {
+                const uid = String(p.id);
+                const score = ratings[uid] ?? 0;
+                return (
+                  <div key={uid} className="flex items-center justify-between gap-3 p-3 border rounded-md">
+                    <div className="flex items-center gap-3">
+                      <Avatar className="w-9 h-9">
+                        <AvatarImage src={p.avatar || "/placeholder.svg"} />
+                        <AvatarFallback>{(p.name ?? "U").slice(0, 1)}</AvatarFallback>
+                      </Avatar>
+                      <div className="flex flex-col">
+                        <span className="font-medium">{p.name}</span>
+                        <span className="text-xs text-muted-foreground">ID: {uid}</span>
+                      </div>
+                    </div>
 
-            {/* 코멘트 */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">코멘트</label>
-              <Textarea
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="리뷰 내용을 입력하세요."
-                rows={6}
-              />
-              <div className="text-xs text-muted-foreground text-right">{content.length}자</div>
+                    <div className="flex items-center gap-1">
+                      {[1, 2, 3, 4, 5].map((i) => (
+                        <button key={i} type="button" onClick={() => setUserRating(uid, i)} className="p-1" aria-label={`${p.name} ${i}점`}>
+                          <Star className={`w-6 h-6 ${i <= score ? "fill-current text-yellow-500" : "text-gray-300"}`} />
+                        </button>
+                      ))}
+                      <Button type="button" variant="ghost" size="sm" className="ml-1" onClick={() => setUserRating(uid, 0)}>
+                        해제
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
 
             <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">이벤트 ID: {eventIdStr}</span>
+              <div className="text-xs text-muted-foreground">
+                이벤트 ID: {detail?.id}
+                {submitting && ratedEntries.length > 0 && (
+                  <span className="ml-2">전송 중 {doneCount}/{ratedEntries.length}</span>
+                )}
+              </div>
               <Button disabled={!canSubmit} onClick={handleSubmit}>
-                {submitting ? "저장 중..." : "리뷰 저장"}
+                {submitting ? "저장 중..." : `리뷰 저장 (${ratedEntries.length}명)`}
               </Button>
             </div>
           </CardContent>
