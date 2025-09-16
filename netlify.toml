@@ -8,11 +8,10 @@
 # WS (로컬과 동일 프리픽스)
 [[redirects]]
 from = "/_be/ws/*"
-to   = "https://bobple-be.onrender.com/ws/:splat"
+to   = "wss://bobple-be.onrender.com/ws/:splat"
 status = 200
 force = true
 headers = { X-Forwarded-Host=":host", X-Forwarded-Proto="https" }
-
 # API
 [[redirects]]
 from = "/_be/api/*"
