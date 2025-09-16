@@ -60,20 +60,34 @@ export async function apiRequest<T = any>(
   const isLoginCall   = endpoint.startsWith("/api/auth/login");
   const isRefreshCall = endpoint.startsWith("/api/auth/refresh");
 
+  const method = String(init.method || "GET").toUpperCase();
   const headers = new Headers(init.headers || {});
   let body: any = init.body;
 
-  // ① Content-Type 처리 (문자열 JSON도 자동 세팅)
-  if (!headers.has("Content-Type") && !isBinaryBody(body as any)) {
-    if (typeof body === "string") {
-      if (looksLikeJsonString(body)) headers.set("Content-Type", "application/json");
-    } else if (body && typeof body === "object") {
-      headers.set("Content-Type", "application/json");
+  // 공통 Accept (서버가 JSON 응답을 의도)
+  if (!headers.has("Accept")) headers.set("Accept", "application/json");
+
+  // GET/HEAD 는 절대 body & Content-Type 넣지 않음
+  const isGetLike = method === "GET" || method === "HEAD";
+
+  // ① Content-Type 처리 (문자열 JSON도 자동 세팅) — 단, GET/HEAD 제외
+  if (!isGetLike) {
+    if (!headers.has("Content-Type") && !isBinaryBody(body as any)) {
+      if (typeof body === "string") {
+        if (looksLikeJsonString(body)) headers.set("Content-Type", "application/json");
+      } else if (body && typeof body === "object") {
+        headers.set("Content-Type", "application/json");
+        body = JSON.stringify(body);
+      }
+    } else if (!isBinaryBody(body as any) && body && typeof body === "object" && !(typeof body === "string")) {
+      // 사용자가 Content-Type을 이미 지정했어도, 객체면 stringify는 해줌
       body = JSON.stringify(body);
     }
-  } else if (!isBinaryBody(body as any) && body && typeof body === "object" && !(typeof body === "string")) {
-    // 사용자가 Content-Type을 이미 지정했어도, 객체면 stringify는 해줌
-    body = JSON.stringify(body);
+  } else {
+    // GET/HEAD 강제 정리
+    body = undefined;
+    // 일부 서버는 GET에 Content-Type이 있는 것도 싫어함
+    if (headers.has("Content-Type")) headers.delete("Content-Type");
   }
 
   // ② Authorization 자동 부착 (로그인/리프레시는 제외, 사용자가 명시했으면 존중)
@@ -90,13 +104,14 @@ export async function apiRequest<T = any>(
       credentials: init.credentials ?? "include",
       cache: init.cache ?? "no-store",
       ...init,
+      method,
       headers,
       body,
     });
   } catch (networkErr: any) {
     console.error("[apiRequest][NETWORK ERROR]", {
       url,
-      method: init.method || "GET",
+      method,
       message: networkErr?.message || String(networkErr),
       error: networkErr,
     });
@@ -137,7 +152,7 @@ export async function apiRequest<T = any>(
       : await res.text().catch(() => "");
     console.error("[apiRequest][HTTP ERROR]", {
       url,
-      method: init.method || "GET",
+      method,
       status: res.status,
       statusText: res.statusText,
       payload,
@@ -149,6 +164,7 @@ export async function apiRequest<T = any>(
     const err: any = new Error(message);
     err.status = res.status;
     err.body = payload;
+    err.payload = payload;              // ← 기존 코드와의 호환성 위해 추가
     err.url = url;
     throw err;
   }
@@ -165,7 +181,7 @@ export async function refreshPOST(): Promise<any | null> {
   let r = await fetch(joinPath(API_BASE_URL, "/api/auth/refresh"), {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: "{}",
   }).catch(() => null);
 
@@ -173,7 +189,7 @@ export async function refreshPOST(): Promise<any | null> {
     r = await fetch(joinPath(API_BASE_URL, "/api/auth/refresh/"), {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: "{}",
     }).catch(() => null);
   }

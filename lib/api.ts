@@ -1,6 +1,6 @@
 // lib/api.ts
 /**
- * API 호출 엔드포인트 래퍼 모음 (기존 이름 그대로)
+ * API 호출 엔드포인트 래퍼 모음
  * - 코어 유틸은 api.core.ts에서 import
  * - 외부 사용처는 계속 "@/lib/api" 에서 import
  */
@@ -17,32 +17,24 @@ const toWireGender = (g: any): "Male" | "Female" | "None" | undefined => {
   if (g == null) return undefined;
   const s = String(g).trim().toLowerCase();
 
-  // 이미 wire 값 허용
   if (s === "male") return "Male";
   if (s === "female") return "Female";
   if (s === "none") return "None";
 
-  // UI 표기/축약형
   if (s === "남성" || s === "m") return "Male";
   if (s === "여성" || s === "f") return "Female";
   if (s === "상관없음" || s === "무관" || s === "n" || s === "선택안함") return "None";
-
   return undefined;
 };
 
 const toWireGrade = (v: any): number | undefined => {
   if (v == null) return undefined;
-
-  // 숫자면 그대로 (1~6)
   if (typeof v === "number" && Number.isFinite(v)) return v;
 
   const s = String(v).trim();
-
-  // 대학원생/졸업생 매핑
   if (s.includes("대학원")) return 5;
   if (s.includes("졸업")) return 6;
 
-  // "1학년" 등에서 숫자만 추출
   const n = parseInt(s.replace(/\D/g, ""), 10);
   return Number.isFinite(n) ? n : undefined;
 };
@@ -138,19 +130,16 @@ export const authAPI = {
   },
 
   updateProfile: async (profileData: { grade: any; gender: any; nickname: string }) => {
-    // 프론트에서 wire 값(1~6, Male/Female/None) 또는 UI 값이 올 수 있으므로 normalize
     const grade = toWireGrade(profileData.grade);
     const gender = toWireGender(profileData.gender);
     const nickname = (profileData.nickname ?? "").trim();
 
-    // 존재 여부만 정확히 체크 (grade == null 로 0과 구분)
     if (grade == null || !gender || nickname.length === 0) {
       throw new Error("학년, 성별, 닉네임은 모두 입력해야 합니다.");
     }
 
     const payload = { grade, gender, nickname };
 
-    // trailing slash 유지
     return apiRequest("/api/auth/profile/", {
       method: "PUT",
       body: JSON.stringify(payload),
@@ -205,7 +194,7 @@ export const eventAPI_read = {
     if (!eid) return null;
 
     const res = await apiRequest(`/api/events/${encodeURIComponent(eid)}`);
-    const raw = res?.data?.item ?? res?.data ?? res?.item ?? res;
+    const raw = (res as any)?.data?.item ?? (res as any)?.data ?? (res as any)?.item ?? res;
 
     const pick = (obj: any, ...keys: string[]) => {
       for (const k of keys) if (obj?.[k] !== undefined) return obj[k];
@@ -284,7 +273,6 @@ export function openChatSocket(
       ? localStorage.getItem("authToken") || localStorage.getItem("accessToken") || ""
       : "");
 
-  // 서버 업그레이드 경로: /ws/chats/:eventId  (+ token 은 쿼리)
   const url =
     `${base}/ws/chats/${encodeURIComponent(eventId)}` +
     (token ? `?token=${encodeURIComponent(token)}` : "");
@@ -292,7 +280,6 @@ export function openChatSocket(
   const ws = new WebSocket(url);
 
   ws.addEventListener("open", () => {
-    // 보수적으로 join 신호 한 번 더
     try { ws.send(JSON.stringify({ type: "join", eventId })); } catch {}
     opts?.onOpen?.();
   });
@@ -308,45 +295,83 @@ export function openChatSocket(
 }
 
 /* ─────────────────────────────────────────────────────────────
-   채팅 (조회만 REST, 전송은 WS 권장)
+   채팅 (스웨거 스펙과 일치)
+   - GET  /api/chats/{eventId}?size[&cursor]
+   - POST /api/chats/{eventId}
+   - PATCH /api/chats/{eventId}
 ───────────────────────────────────────────────────────────── */
+export type ChatHistory = {
+  items: ChatMessage[];
+  nextCursor?: number | string | null;
+};
+
 export const chatAPI = {
-  /** 채팅방 내용 불러오기 (과거 메시지) */
-  async getChatRoom(eventId: number) {
-    const res = await apiRequest(`/api/chats/${encodeURIComponent(eventId)}`);
-    const body = (res && typeof res === "object" && "items" in (res as any))
-      ? (res as any)
-      : (res?.data ?? res);
+  /** 채팅방 내용 불러오기
+   * - size 기본 30
+   * - 최초 조회: cursor 미전송
+   * - 다음 페이지: 서버가 준 nextCursor(≥1)만 cursor로 전송
+   */
+  async getChatRoom(
+    eventId: number,
+    opts?: { cursor?: number | string; size?: number }
+  ): Promise<ChatHistory> {
+    const size = Number.isFinite(Number(opts?.size)) ? Number(opts?.size) : 30;
 
-    const raw: any[] =
-      Array.isArray(body?.items) ? body.items :
-      Array.isArray(body?.messages) ? body.messages :
-      Array.isArray(body) ? body : [];
+    const sp = new URLSearchParams();
+    sp.set("size", String(size));
 
-    return raw.map((m: any) => ({
-      id: m.id,
-      userId: m.user?.id ?? m.userId ?? m.user_id ?? null,
-      content: String(m.content ?? ""),
-      createdAt: String(m.createdAt ?? m.created_at ?? new Date().toISOString()),
-    })) as ChatMessage[];
-  },
-
-  /** (선택) 폴백: 서버에 REST 전송이 없으면 실패할 수 있음. 기본적으로 WS만 사용하세요. */
-  async sendMessage(eventId: number, text: string) {
-    return await tryMany<any>([
-      { path: `/api/chats/${encodeURIComponent(eventId)}`, method: "POST", body: { content: text } },
-      { path: `/api/chats/${encodeURIComponent(eventId)}`, method: "POST", body: { message: text } },
-      { path: `/api/chats/${encodeURIComponent(eventId)}`, method: "POST", body: { text } },
-    ]);
-  },
-
-  /** 채팅 나가기 (서버 미구현 시에도 안전하게 NOP 처리) */
-  async leaveChat(eventId: number) {
-    try {
-      return await apiRequest(`/api/chats/${encodeURIComponent(eventId)}`, { method: "PATCH" });
-    } catch {
-      return { ok: true };
+    if (opts?.cursor != null) {
+      const c = Number(opts.cursor);
+      if (Number.isInteger(c) && c >= 1) sp.set("cursor", String(c));
     }
+
+    const qs = sp.toString();
+    const res = await apiRequest(`/api/chats/${encodeURIComponent(eventId)}${qs ? `?${qs}` : ""}`);
+
+    const body = (res as any)?.data ?? res;
+    const rawItems: any[] =
+      Array.isArray(body?.items) ? body.items :
+      Array.isArray(body)        ? body       : [];
+    const nextCursor = body?.nextCursor ?? body?.next_cursor ?? null;
+
+    const items: ChatMessage[] = rawItems.map((m: any) => ({
+      id: m.id,
+      userId: m.userId ?? m.user_id ?? m.user?.id ?? null,
+      content: String(m.content ?? m.message ?? m.text ?? ""),
+      createdAt: String(m.createdAt ?? m.created_at ?? new Date().toISOString()),
+    }));
+
+    return { items, nextCursor };
+  },
+
+  /** 메시지 전송(WS 실패 시 폴백) */
+  async sendMessage(eventId: number, payload: { content: string }) {
+    try {
+      return await apiRequest(`/api/chats/${encodeURIComponent(eventId)}`, {
+        method: "POST",
+        body: JSON.stringify({ content: payload.content }),
+        headers: { "Content-Type": "application/json" } as any,
+      });
+    } catch {
+      try {
+        return await apiRequest(`/api/chats/${encodeURIComponent(eventId)}`, {
+          method: "POST",
+          body: JSON.stringify({ content: payload.content, eventId }),
+          headers: { "Content-Type": "application/json" } as any,
+        });
+      } catch {
+        return await apiRequest(`/api/chats/${encodeURIComponent(eventId)}`, {
+          method: "POST",
+          body: JSON.stringify({ content: payload.content, event_id: eventId }),
+          headers: { "Content-Type": "application/json" } as any,
+        });
+      }
+    }
+  },
+
+  /** 채팅방 나가기 */
+  async leaveChat(eventId: number) {
+    return apiRequest(`/api/chats/${encodeURIComponent(eventId)}`, { method: "PATCH" });
   },
 };
 

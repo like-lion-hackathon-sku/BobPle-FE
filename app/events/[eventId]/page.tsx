@@ -14,8 +14,14 @@ import { MapPin, Clock, Users, Trash2 } from "lucide-react";
 import { apiRequest, eventAPI } from "@/lib/api";
 import { eventAPI_mutation } from "@/lib/api.routes";
 
+/* ────────────────────────────────────────────────────────────
+   상수
+──────────────────────────────────────────────────────────── */
 const DEFAULT_MAX = 4;
 
+/* ────────────────────────────────────────────────────────────
+   타입
+──────────────────────────────────────────────────────────── */
 type Participant = {
   id?: number | string;
   nickname?: string;
@@ -45,6 +51,9 @@ type EventDetail = {
   participants: Participant[];
 };
 
+/* ────────────────────────────────────────────────────────────
+   유틸
+──────────────────────────────────────────────────────────── */
 const toHHMM = (iso?: string | null) => {
   if (!iso) return null;
   const d = new Date(iso);
@@ -67,6 +76,7 @@ const toDateLabel = (iso?: string | null) => {
 async function fetchRestaurantById(
   restaurantId: number
 ): Promise<{ name?: string | null; address?: string | null }> {
+  // 1순위: ID 조회
   try {
     const r = await apiRequest(`/api/restaurants/${restaurantId}`);
     const d = r?.data ?? r;
@@ -76,6 +86,7 @@ async function fetchRestaurantById(
         address: d.address ?? d.roadAddress ?? null,
       };
   } catch {}
+  // 2순위: 검색에서 ID 매칭
   try {
     const r = await apiRequest(`/api/restaurants?q=${encodeURIComponent(String(restaurantId))}`);
     const d = r?.data ?? r;
@@ -90,6 +101,9 @@ async function fetchRestaurantById(
   return { name: null, address: null };
 }
 
+/* ────────────────────────────────────────────────────────────
+   컴포넌트
+──────────────────────────────────────────────────────────── */
 export default function EventDetailPage() {
   const router = useRouter();
   const params = useParams();
@@ -136,14 +150,21 @@ export default function EventDetailPage() {
   }, []);
 
   const dateLabel = useMemo(() => toDateLabel(detail.startISO), [detail.startISO]);
-
   const isApplied = myApplicationId != null && Number(myApplicationId) > 0;
+
+  // ★ 참가자(호스트 포함) 여부 → 채팅방 버튼 노출 기준
+  const amIParticipant = useMemo(() => {
+    const my = Number(meId);
+    if (!Number.isFinite(my)) return false;
+    const listed = detail.participants?.some((p) => Number(p.id) === my);
+    return listed || isHost;
+  }, [meId, detail.participants, isHost]);
 
   /* ─────────────────────────────────────────────
    * 프로필 이동 유틸 (나 → /profile, 타인 → /profile/:id)
    * ──────────────────────────────────────────── */
   const goProfile = (userId?: number | string) => {
-    if (userId == null) return; // id 없으면 무시
+    if (userId == null) return;
     const my = Number(meId);
     const target = Number(userId);
     if (Number.isFinite(my) && Number.isFinite(target) && my === target) {
@@ -153,6 +174,9 @@ export default function EventDetailPage() {
     }
   };
 
+  /* ─────────────────────────────────────────────
+   * 초기 로드
+   * ──────────────────────────────────────────── */
   useEffect(() => {
     (async () => {
       if (!eventId) {
@@ -221,6 +245,7 @@ export default function EventDetailPage() {
           participants: mergedParticipants,
         });
 
+        // meId, host 여부, 내 신청 ID
         const meFromServer = Number(row.me?.id ?? row.meId ?? row.userId ?? NaN);
         const meFromLS = Number(me?.id ?? NaN);
         const myId = Number.isFinite(meFromServer) ? meFromServer : Number.isFinite(meFromLS) ? meFromLS : null;
@@ -234,9 +259,7 @@ export default function EventDetailPage() {
 
         if ((!Number.isFinite(appId) || !(appId > 0)) && typeof window !== "undefined") {
           const saved = Number(localStorage.getItem(`appId:${row.id}`) ?? NaN);
-          if (Number.isFinite(saved) && saved > 0) {
-            setMyApplicationId(saved);
-          }
+          if (Number.isFinite(saved) && saved > 0) setMyApplicationId(saved);
         }
 
         await reloadComments(String(row.id), nicknameMapFromRow);
@@ -250,6 +273,9 @@ export default function EventDetailPage() {
     })();
   }, [eventId, me]);
 
+  /* ─────────────────────────────────────────────
+   * 댓글 로드/작성/삭제
+   * ──────────────────────────────────────────── */
   async function reloadComments(idForComments: string, nicknameMap?: Map<string, string>) {
     try {
       const r: any = await apiRequest(`/api/events/${encodeURIComponent(idForComments)}/comments`);
@@ -374,7 +400,9 @@ export default function EventDetailPage() {
     }
   }
 
-  /* ====== 참여하기 / 신청 취소 ====== */
+  /* ─────────────────────────────────────────────
+   * 참여하기 / 신청 취소
+   * ──────────────────────────────────────────── */
   const applyToEvent = async () => {
     if (!meId) {
       alert("로그인이 필요합니다.");
@@ -388,6 +416,7 @@ export default function EventDetailPage() {
 
     setBusy(true);
     try {
+      // Optimistic UI
       if (me?.id) {
         const already = prevParts.some((p) => String(p.id) === String(me.id));
         if (!already) {
@@ -423,6 +452,7 @@ export default function EventDetailPage() {
         setMyApplicationId(picked);
         if (typeof window !== "undefined") localStorage.setItem(`appId:${detail.id}`, String(picked));
       } else {
+        // fallback: 최신 상세로 재조회
         const fresh: any = await eventAPI.getEvent(String(detail.id));
         const appId =
           pickNumber(fresh?.myApplicationId) ||
@@ -436,13 +466,13 @@ export default function EventDetailPage() {
         }
       }
     } catch (e: any) {
+      // rollback
       setMyApplicationId(prevAppId ?? null);
       setDetail((prev) => ({
         ...prev,
         participants: prevParts,
         currentParticipants: prevCount,
       }));
-
       alert(e?.message || "신청에 실패했습니다.");
     } finally {
       setBusy(false);
@@ -459,6 +489,7 @@ export default function EventDetailPage() {
 
     setBusy(true);
     try {
+      // Optimistic UI
       if (me?.id) {
         const removed = prevParts.filter((p) => String(p.id) !== String(me.id));
         setDetail((prev) => ({
@@ -472,19 +503,22 @@ export default function EventDetailPage() {
       setMyApplicationId(null);
       if (typeof window !== "undefined") localStorage.removeItem(`appId:${detail.id}`);
     } catch (e: any) {
+      // rollback
       setMyApplicationId(prevAppId);
       setDetail((prev) => ({
         ...prev,
         participants: prevParts,
         currentParticipants: prevCount,
       }));
-
       alert(e?.message || "신청 취소에 실패했습니다.");
     } finally {
       setBusy(false);
     }
   };
 
+  /* ─────────────────────────────────────────────
+   * 렌더
+   * ──────────────────────────────────────────── */
   if (!eventId) {
     return (
       <div className="min-h-screen grid place-items-center text-destructive">
@@ -633,10 +667,15 @@ export default function EventDetailPage() {
               </div>
             )}
 
-            {/* ★ 밥약 신청자만 채팅방 입장 버튼 */}
-            {isApplied && (
+            {/* ★ 호스트 포함: 참가자만 채팅방 입장 가능 */}
+            {amIParticipant && (
               <div className="mt-4">
-                <Button className="w-full" onClick={() => router.push(`/chats/${detail.id}`)}>
+                <Button
+                  className="w-full"
+                  onClick={() =>
+                    router.push(`/chats/${detail.id}?title=${encodeURIComponent(detail.title)}`)
+                  }
+                >
                   채팅방 입장하기
                 </Button>
               </div>
