@@ -13,7 +13,7 @@ import { eventAPI, chatAPI } from "@/lib/api";
 
 const DEBUG = process.env.NEXT_PUBLIC_DEBUG === "1";
 
-type ChatPreview = {
+type ChatPreview = { 
   id: number | string;       // chatId (= eventId)
   title: string;
   lastMessage?: string | null;
