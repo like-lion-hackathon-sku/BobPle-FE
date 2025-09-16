@@ -13,18 +13,19 @@ import { eventAPI, chatAPI } from "@/lib/api";
 
 const DEBUG = process.env.NEXT_PUBLIC_DEBUG === "1";
 
-type ChatPreview = { 
-  id: number | string;       // chatId (= eventId)
+type ChatPreview = {
+  id: number;                 // eventId
   title: string;
   lastMessage?: string | null;
-  lastAt?: string | null;    // ISO
+  lastAt?: string | null;     // ISO
   participants?: number | null;
-  startISO?: string | null;  // 추가
-  endISO?: string | null;    // 추가
+  startISO?: string | null;
+  endISO?: string | null; 
 };
 
+
 const MOCK_CHAT: ChatPreview = {
-  id: "mock-1",
+  id: -1,
   title: "샘플 채팅방",
   lastMessage: "연결되면 실제 데이터가 표시됩니다.",
   lastAt: new Date().toISOString(),
@@ -33,6 +34,7 @@ const MOCK_CHAT: ChatPreview = {
   endISO: null,
 };
 
+/* ───────────── 유틸 ───────────── */
 function asArray(v: any): any[] {
   if (Array.isArray(v)) return v;
   if (Array.isArray(v?.items)) return v.items;
@@ -54,11 +56,26 @@ function formatTime(iso?: string | null) {
     return "";
   }
 }
-function getEventId(app: any): number | null {
-  const v = app?.eventId ?? app?.id ?? app?.event_id ?? app?.event?.id ?? app?.event?.eventId ?? null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+
+/** 여러 구조에서 eventId를 안전 추출(숫자만 뽑아 양의 정수 검사) */
+function safeEventId(app: any): number | null {
+  const candidates = [
+    app?.eventId,
+    app?.id, // 일부 스키마에서는 이벤트 자체 id
+    app?.event_id,
+    app?.event?.id,
+    app?.event?.eventId,
+  ];
+  for (const v of candidates) {
+    if (v == null) continue;
+    const digits = String(v).match(/\d+/)?.[0];
+    if (!digits) continue;
+    const n = Number(digits);
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return null;
 }
+
 function getEventTitle(obj: any): string | null {
   return (
     obj?.title ??
@@ -76,11 +93,40 @@ function getEventTitle(obj: any): string | null {
   );
 }
 function getEventTimes(obj: any): { startISO?: string | null; endISO?: string | null } {
-  const startISO = obj?.startISO ?? obj?.startAt ?? obj?.start_at ?? obj?.event?.startAt ?? obj?.event?.start_at ?? null;
-  const endISO   = obj?.endISO   ?? obj?.endAt   ?? obj?.end_at   ?? obj?.event?.endAt   ?? obj?.event?.end_at   ?? null;
-  return { startISO: startISO ? String(startISO) : null, endISO: endISO ? String(endISO) : null };
+  const startISO =
+    obj?.startISO ??
+    obj?.startAt ??
+    obj?.start_at ??
+    obj?.event?.startAt ??
+    obj?.event?.start_at ??
+    null;
+  const endISO =
+    obj?.endISO ??
+    obj?.endAt ??
+    obj?.end_at ??
+    obj?.event?.endAt ??
+    obj?.event?.end_at ??
+    null;
+  return {
+    startISO: startISO ? String(startISO) : null,
+    endISO: endISO ? String(endISO) : null,
+  };
 }
 
+/** eventId 기준으로 중복 제거 */
+function dedupeByEventId(arr: any[]): any[] {
+  const seen = new Set<number>();
+  const out: any[] = [];
+  for (const item of arr) {
+    const eid = safeEventId(item);
+    if (!eid || seen.has(eid)) continue;
+    seen.add(eid);
+    out.push(item);
+  }
+  return out;
+}
+
+/* ───────────── 페이지 ───────────── */
 export default function ChatsPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -88,44 +134,73 @@ export default function ChatsPage() {
   const [q, setQ] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [usedMock, setUsedMock] = useState(false);
-
-  // ▼ 추가: 현재/지난 탭
   const [view, setView] = useState<"current" | "past">("current");
 
   useEffect(() => {
     let cancelled = false;
+
     (async () => {
       setLoading(true);
       setError(null);
       setUsedMock(false);
-      try {
-        const appsRes: any = await (eventAPI as any).getMyEvents();
-        const myApps = asArray(appsRes);
-        if (DEBUG && myApps[0]) console.log("[chats] myApps sample keys:", Object.keys(myApps[0]));
 
-        if (myApps.length === 0) {
+      try {
+        // 내 유저 ID
+        const myId =
+          typeof window !== "undefined"
+            ? Number(JSON.parse(localStorage.getItem("user") || "null")?.id)
+            : NaN;
+
+        // A) 내가 신청/참여한 이벤트
+        const appliedRes: any = await (eventAPI as any).getMyEvents?.();
+        const applied = dedupeByEventId(asArray(appliedRes));
+
+        // B) 내가 주최한 이벤트 — 프론트에서 직접 필터링
+        let hosted: any[] = [];
+        try {
+          if (Number.isFinite(myId)) {
+            const res = await (eventAPI as any).getEvents?.({ size: 200 });
+            const all = asArray((res as any)?.items ?? res);
+
+            hosted = all.filter((x) => {
+              const creator = Number(x?.creatorId ?? x?.creator_id);
+              const host = Number(x?.hostId ?? x?.host_id);
+              return creator === myId || host === myId;
+            });
+          }
+        } catch (e) {
+          if (DEBUG) console.warn("[chats] get hosted (front filter) failed:", e);
+          hosted = [];
+        }
+
+        // 합치고 **이벤트 기준** 중복 제거
+        const baseList = dedupeByEventId([...applied, ...hosted]);
+
+        if (baseList.length === 0) {
           if (!cancelled) {
-            setError("참여 중인 채팅방(밥약)이 없습니다.");
+            setError("표시할 채팅방(밥약)이 없습니다.");
             setItems([MOCK_CHAT]);
             setUsedMock(true);
           }
           return;
         }
 
-        const top = myApps.slice(0, 20);
+        // 상위 최대 50개만
+        const top = baseList.slice(0, 50);
+
         const results = await Promise.allSettled(
           top.map(async (app: any) => {
-            const eventId = getEventId(app);
+            const eventId = safeEventId(app);
             if (!eventId) {
               if (DEBUG) console.warn("[chats] eventId 없음:", app);
-              return null;
+              return null; // 잘못된 ID 스킵(403 방지)
             }
 
-            // 제목/시간 추출
+            // 제목/시간
             let title = getEventTitle(app);
             let { startISO, endISO } = getEventTimes(app);
 
-            // 상세로 보강
+            // 상세 보강
             if ((!title || (!startISO && !endISO)) && typeof (eventAPI as any).getEvent === "function") {
               try {
                 const detail = await (eventAPI as any).getEvent(eventId);
@@ -170,24 +245,18 @@ export default function ChatsPage() {
           })
         );
 
-        const previews = results
+        const previews = (results
           .map((r) => (r.status === "fulfilled" ? r.value : null))
-          .filter(Boolean) as ChatPreview[];
+          .filter(Boolean) as ChatPreview[])
+          .sort((a, b) => {
+            const ta = a.lastAt ? Date.parse(a.lastAt) : 0;
+            const tb = b.lastAt ? Date.parse(b.lastAt) : 0;
+            return tb - ta;
+          });
 
         if (!cancelled) {
-          if (previews.length === 0) {
-            setError("채팅 내역이 없어 샘플 데이터를 보여드려요.");
-            setItems([MOCK_CHAT]);
-            setUsedMock(true);
-          } else {
-            // 기본 정렬: 최근 대화 우선
-            previews.sort((a, b) => {
-              const ta = a.lastAt ? Date.parse(a.lastAt) : 0;
-              const tb = b.lastAt ? Date.parse(b.lastAt) : 0;
-              return tb - ta;
-            });
-            setItems(previews);
-          }
+          setItems(previews.length ? previews : [MOCK_CHAT]);
+          setUsedMock(previews.length === 0);
         }
       } catch (e: any) {
         if (DEBUG) console.error("[chats] load error:", e);
@@ -198,6 +267,7 @@ export default function ChatsPage() {
         if (!cancelled) setLoading(false);
       }
     })();
+
     return () => { cancelled = true; };
   }, []);
 
@@ -218,6 +288,13 @@ export default function ChatsPage() {
     }
     return arr;
   }, [items, q, usedMock, view]);
+
+  const routerPush = (c: ChatPreview) => {
+    if (c.id === -1) return;
+    const t = (c.title ?? "").trim();
+    const qs = t ? `?t=${encodeURIComponent(t)}` : "";
+    router.push(`/chats/${c.id}${qs}`);
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -248,7 +325,6 @@ export default function ChatsPage() {
             />
           </div>
 
-          {/* 현재/지난 토글 */}
           <div className="flex shrink-0 rounded-md border">
             <Button
               variant={view === "current" ? "default" : "ghost"}
@@ -276,15 +352,14 @@ export default function ChatsPage() {
           <div className="text-sm text-muted-foreground">표시할 채팅방이 없습니다.</div>
         ) : (
           <div className="space-y-3">
-            {filtered.map((c) => {
-              const isMock = typeof c.id === "string" && (c.id as string).startsWith("mock-");
+            {filtered.map((c, idx) => {
+              const isMock = c.id === -1;
+              const uniqueKey = `${c.id}-${c.startISO ?? "x"}-${c.endISO ?? "x"}-${idx}`;
               return (
                 <Card
-                  key={c.id}
+                  key={uniqueKey}
                   className={`transition-shadow ${isMock ? "opacity-90" : "hover:shadow-sm cursor-pointer"}`}
-                  onClick={() => {
-                    if (!isMock) router.push(`/chats/${c.id}?t=${encodeURIComponent(c.title)}`);
-                  }}
+                  onClick={() => !isMock && routerPush(c)}
                 >
                   <CardContent className="py-3 px-4">
                     <div className="flex items-start justify-between gap-4">
@@ -299,7 +374,6 @@ export default function ChatsPage() {
                       </div>
                       <div className="text-right shrink-0">
                         <div className="text-xs text-muted-foreground">{formatTime(c.lastAt)}</div>
-                        {/* 선택: 종료일 표시 */}
                         {c.endISO && (
                           <div className="text-[10px] text-muted-foreground/70 mt-1">
                             종료: {new Date(c.endISO).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })}
