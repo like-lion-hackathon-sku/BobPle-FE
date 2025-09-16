@@ -15,7 +15,7 @@
 
 # ✅ WebSocket 프록시만 추가
 [[redirects]]
-  from = "/api/*"
+  from = "/_be/*"
   to = "https://bobple-be.onrender.com/ws/:splat"
   status = 200
   force = true
