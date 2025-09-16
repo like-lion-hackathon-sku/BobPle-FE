@@ -7,7 +7,7 @@
 
 # 기존 API 프록시 유지
 [[redirects]]
-  from = "/api/*"
+  from = "/_be/api/*"
   to = "https://bobple-be.onrender.com/api/:splat"
   status = 200
   force = true
