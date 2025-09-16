@@ -8,10 +8,25 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ArrowLeft, Send, Loader2, LogOut } from "lucide-react";
 
-import { apiRequest, userAPI } from "@/lib/api";
+import { apiRequest, userAPI, getAuthToken } from "@/lib/api";
 import { chatAPI, openChatSocket, type ChatMessage } from "@/lib/api";
 
 const POLL_MS = 3500;
+
+/** WebSocket 인증 토큰을 어디에 있든 찾아서 'token' 키로 정착시킨다. */
+function resolveWsToken(): string {
+  if (typeof window === "undefined") return "";
+  const t1 = localStorage.getItem("token");
+  if (t1) return t1;
+
+  const t2 =
+    localStorage.getItem("authToken") ||
+    localStorage.getItem("accessToken") ||
+    "";
+  const t3 = t2 || getAuthToken() || ""; // getAuthToken: localStorage→cookie fallback
+  if (t3) localStorage.setItem("token", t3); // ✅ 마이그레이션
+  return t3;
+}
 
 const isAuthError = (err: any) => {
   const s = Number(err?.status || err?.response?.status || err?.code || 0);
@@ -82,7 +97,7 @@ export default function ChatRoomPage() {
   }, []);
   const meId = me.id;
 
-  /** 닉네임 채우기: /api/users/:id 의 { success: { nickname } } 사용 */
+  /** 닉네임 채우기 */
   const ensureUsers = async (ids: Array<number | null | undefined>) => {
     const wants = Array.from(
       new Set(
@@ -97,7 +112,6 @@ export default function ChatRoomPage() {
       const results = await Promise.allSettled(
         wants.map(async (id) => {
           const r = (await userAPI.getUserProfile(id)) as any;
-          // ✅ 다양한 래핑을 안전하게 처리
           const body = r?.success ?? r?.data ?? r?.user ?? r;
           const nn = body?.nickname ?? null;
           return { id, nickname: nn as string | null };
@@ -198,13 +212,11 @@ export default function ChatRoomPage() {
 
   useEffect(() => {
     if (eventId == null) return;
-    const token =
-      (typeof window !== "undefined" &&
-        (localStorage.getItem("authToken") || localStorage.getItem("accessToken"))) ||
-      "";
+
+    const token = resolveWsToken(); // ✅ 토큰 확보 & token 키로 정착
 
     const ws = openChatSocket(eventId, {
-      token,
+      token, // ✅ URL(&token=) + Subprotocol('token:<jwt>') 둘 다 전달됨
       onOpen: () => { setWsReady(true); stopPolling(); },
       onClose: () => { setWsReady(false); startPolling(); },
       onError: () => { setWsReady(false); try { ws.close(); } catch {} startPolling(); },
@@ -218,10 +230,7 @@ export default function ChatRoomPage() {
             createdAt: data.data.createdAt ?? data.data.created_at ?? new Date().toISOString(),
           };
           if (m.content) {
-            setMessages((prev) => {
-              const next = prev.some((x) => isDup(x, m)) ? prev : sortAsc([...prev, m]);
-              return next;
-            });
+            setMessages((prev) => (prev.some((x) => isDup(x, m)) ? prev : sortAsc([...prev, m])));
             ensureUsers([m.userId]);
           }
         }
