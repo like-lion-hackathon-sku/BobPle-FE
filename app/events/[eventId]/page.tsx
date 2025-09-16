@@ -671,11 +671,13 @@ export default function EventDetailPage() {
             {amIParticipant && (
               <div className="mt-4">
                 <Button
-                  className="w-full"
-                  onClick={() =>
-                    router.push(`/chats/${detail.id}?title=${encodeURIComponent(detail.title)}`)
-                  }
-                >
+  className="w-full"
+  onClick={() => {
+    const eid = String(detail.id ?? eventId);               // 안전한 ID
+    const t   = (detail.title ?? "").trim();                // 제목
+    router.push(`/chats/${eid}?t=${encodeURIComponent(t)}`); // 제목을 쿼리로 전달
+  }}
+>
                   채팅방 입장하기
                 </Button>
               </div>

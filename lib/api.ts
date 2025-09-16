@@ -244,7 +244,7 @@ export const eventAPI_read = {
 };
 
 /* ─────────────────────────────────────────────────────────────
-   웹소켓 (서버 요구: /ws/chats/:eventId)
+   웹소켓 (서버 요구: /ws/chats?eventId=123&token=xxx)
 ───────────────────────────────────────────────────────────── */
 export type ChatMessage = {
   id?: number | string;
@@ -273,14 +273,15 @@ export function openChatSocket(
       ? localStorage.getItem("authToken") || localStorage.getItem("accessToken") || ""
       : "");
 
+  // ✅ 쿼리 방식으로 eventId & token 전달
   const url =
-    `${base}/ws/chats/${encodeURIComponent(eventId)}` +
-    (token ? `?token=${encodeURIComponent(token)}` : "");
+    `${base}/ws/chats?eventId=${encodeURIComponent(eventId)}` +
+    (token ? `&token=${encodeURIComponent(token)}` : "");
 
   const ws = new WebSocket(url);
 
   ws.addEventListener("open", () => {
-    try { ws.send(JSON.stringify({ type: "join", eventId })); } catch {}
+    // 서버가 system 메시지를 내려주므로 join 메시지는 필요 없음
     opts?.onOpen?.();
   });
   ws.addEventListener("message", (e) => {
@@ -334,12 +335,14 @@ export const chatAPI = {
       Array.isArray(body)        ? body       : [];
     const nextCursor = body?.nextCursor ?? body?.next_cursor ?? null;
 
-    const items: ChatMessage[] = rawItems.map((m: any) => ({
+    const items: ChatMessage[] = rawItems.map((m: any) => ([
+      "id","userId","content","createdAt"
+    ].reduce((acc, _) => acc, {
       id: m.id,
       userId: m.userId ?? m.user_id ?? m.user?.id ?? null,
       content: String(m.content ?? m.message ?? m.text ?? ""),
       createdAt: String(m.createdAt ?? m.created_at ?? new Date().toISOString()),
-    }));
+    })));
 
     return { items, nextCursor };
   },
