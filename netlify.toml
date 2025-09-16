@@ -1,3 +1,5 @@
+# netlify.toml (배포용 최종본)
+
 [build]
   command = "npm run build"
   publish = ".next"
@@ -5,11 +7,11 @@
 [[plugins]]
   package = "@netlify/plugin-nextjs"
 
-
+# 🔑 BE 프록시 설정
+# 프론트에서 /_be/... 로 API 요청 → BE로 리라이트
 [[redirects]]
-  from = "/api/*"
-  to = "https://bobple-be.onrender.com/api/:splat"
+  from = "/_be/*"
+  to = "https://bobple-be.onrender.com/:splat"
   status = 200
   force = true
-  # (선택) 백엔드가 Host체크하면 도움됨
   headers = { X-Forwarded-Host = ":host" }
