@@ -1,86 +1,131 @@
+// app/chats/[eventId]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ArrowLeft, Send, Loader2, LogOut } from "lucide-react";
+
+import { apiRequest } from "@/lib/api";
 import { chatAPI, openChatSocket, type ChatMessage } from "@/lib/api";
 
-const DEBUG = process.env.NEXT_PUBLIC_DEBUG === "1";
+const POLL_MS = 3500;
+
+const isAuthError = (err: any) => {
+  const s = Number(err?.status || err?.response?.status || err?.code || 0);
+  const code = err?.payload?.error?.errorCode;
+  const msg = String(err?.payload?.error?.reason || err?.message || "").toLowerCase();
+  return s === 401 || s === 403 || code === "U003" || msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("로그인");
+};
+
+// 낙관 추가/에코 중복 방지용
+const isDup = (a: ChatMessage, b: ChatMessage) => {
+  const ta = new Date(a.createdAt || "").getTime();
+  const tb = new Date(b.createdAt || "").getTime();
+  const secSame = Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) < 1000;
+  return String(a.userId) === String(b.userId) && a.content === b.content && secSame;
+};
 
 export default function ChatRoomPage() {
   const router = useRouter();
-  const { chatId } = useParams<{ chatId: string }>();
-  const eventId = Number(chatId);
+  // ✅ 폴더명이 [eventId]이므로 여기서도 eventId로 받아야 함
+  const { eventId: eventIdParam } = useParams<{ eventId: string }>();
+  const search = useSearchParams();
+  const titleFromQuery = search?.get("title") || "";
+
+  const eventId = useMemo(() => {
+    const n = Number(eventIdParam);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [eventIdParam]);
 
   const [loading, setLoading] = useState(true);
   const [leaving, setLeaving] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [text, setText] = useState("");
   const [wsReady, setWsReady] = useState(false);
   const [guardMsg, setGuardMsg] = useState<string | null>(null);
+
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [text, setText] = useState("");
+
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const meId = useMemo(() => {
     if (typeof window === "undefined") return null;
     try {
-      const raw = localStorage.getItem("user");
-      const u = raw ? JSON.parse(raw) : null;
+      const u = JSON.parse(localStorage.getItem("user") || "null");
       return u?.id ?? null;
     } catch {
       return null;
     }
   }, []);
 
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
+  // 스크롤 항상 하단
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length]);
+    const id = setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 0);
+    return () => clearTimeout(id);
+  }, [messages]);
 
-  // 과거 메시지 로드
+  // 초기 히스토리(스펙: 최초엔 cursor 미전송, size만)
   useEffect(() => {
+    if (eventId == null) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
       try {
-        const list = await chatAPI.getChatRoom(eventId).catch((err) => {
-          if (DEBUG) console.error("[chatRoom] history load failed:", err);
-          return [];
-        });
-        if (!cancelled) setMessages(Array.isArray(list) ? list : []);
+        const { items } = await chatAPI.getChatRoom(eventId, { size: 30 });
+        if (!cancelled) setMessages(items);
+      } catch (e1) {
+        try {
+          const raw = await apiRequest(`/api/chats/${eventId}?size=30`);
+          const d = (raw as any)?.data ?? raw;
+          const list: any[] = Array.isArray(d?.items) ? d.items : Array.isArray(d) ? d : [];
+          if (!cancelled) setMessages(list as ChatMessage[]);
+        } catch (err) {
+          if (isAuthError(err)) setGuardMsg("이 채팅방은 참여 신청한 사용자만 입장할 수 있어요.");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [eventId]);
 
-  // WS 연결 + 폴링 폴백
-  useEffect(() => {
-    const stopPolling = () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-    const startPolling = () => {
-      stopPolling();
-      pollRef.current = setInterval(async () => {
-        const list = await chatAPI.getChatRoom(eventId).catch(() => null);
-        if (!Array.isArray(list)) return;
+  // 폴링 (최신 페이지만 갱신: cursor 없이 size만)
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+  const startPolling = () => {
+    stopPolling();
+    if (eventId == null) return;
+    pollRef.current = setInterval(async () => {
+      try {
+        const { items: next } = await chatAPI.getChatRoom(eventId, { size: 30 });
         setMessages((prev) => {
-          if (list.length !== prev.length) return list;
+          if (next.length !== prev.length) return next;
           const a = prev[prev.length - 1]?.content;
-          const b = list[list.length - 1]?.content;
-          return a === b ? prev : list;
+          const b = next[next.length - 1]?.content;
+          return a === b ? prev : next;
         });
-      }, 3500);
-    };
+      } catch (err) {
+        if (isAuthError(err)) {
+          setGuardMsg("이 채팅방은 참여 신청한 사용자만 입장할 수 있어요.");
+          stopPolling();
+        }
+      }
+    }, POLL_MS);
+  };
 
+  // WS 연결 + 폴백
+  useEffect(() => {
+    if (eventId == null) return;
     const token =
       (typeof window !== "undefined" &&
         (localStorage.getItem("authToken") || localStorage.getItem("accessToken"))) ||
@@ -91,7 +136,6 @@ export default function ChatRoomPage() {
       onOpen: () => {
         setWsReady(true);
         stopPolling();
-        if (DEBUG) console.log("[chatRoom] ws open:", eventId);
       },
       onClose: () => {
         setWsReady(false);
@@ -102,16 +146,18 @@ export default function ChatRoomPage() {
         try { ws.close(); } catch {}
         startPolling();
       },
-      onMessage: (data) => {
+      onMessage: (data: any) => {
         if (!data) return;
         if (data.type === "message") {
           const m: ChatMessage = {
             id: data.id,
-            userId: data.user?.id ?? data.userId ?? null,
-            content: data.content ?? "",
-            createdAt: data.createdAt ?? new Date().toISOString(),
+            userId: data.userId ?? data.user?.id ?? null,
+            content: data.content ?? data.message ?? data.text ?? "",
+            createdAt: data.createdAt ?? data.created_at ?? new Date().toISOString(),
           };
-          if (m.content) setMessages((prev) => [...prev, m]);
+          if (m.content) {
+            setMessages((prev) => (prev.some((x) => isDup(x, m)) ? prev : [...prev, m]));
+          }
         } else if (data.type === "join-ack" && data.ok === false) {
           setGuardMsg("이 채팅방은 참여 신청한 사용자만 입장할 수 있어요.");
         }
@@ -119,47 +165,67 @@ export default function ChatRoomPage() {
     });
 
     wsRef.current = ws;
+    const fallbackTimer = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN) startPolling();
+    }, 1200);
 
     return () => {
+      clearTimeout(fallbackTimer);
       stopPolling();
       try { wsRef.current?.close(); } catch {}
       wsRef.current = null;
     };
   }, [eventId]);
 
-  const send = () => {
+  // 전송 (WS 우선, 실패 시 POST 폴백)
+  const send = async () => {
+    if (eventId == null) return;
     const content = text.trim();
     if (!content) return;
 
-    // ✅ WS 열렸을 때만 전송 (REST 폴백 없음)
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "send", eventId, content }));
-      // 낙관적 렌더
       setMessages((prev) => [
         ...prev,
-        {
-          id: `tmp-${Date.now()}`,
-          userId: meId ?? null,
-          content,
-          createdAt: new Date().toISOString(),
-        },
+        { id: `tmp-${Date.now()}`, userId: meId ?? null, content, createdAt: new Date().toISOString() },
       ]);
       setText("");
-    } else {
-      console.warn("실시간 연결이 열리지 않아 메시지를 보낼 수 없습니다.");
+      return;
+    }
+
+    try {
+      await chatAPI.sendMessage(eventId, { content });
+      setText("");
+      const { items } = await chatAPI.getChatRoom(eventId, { size: 30 });
+      setMessages(items);
+    } catch (e) {
+      console.warn("메시지 전송 실패:", e);
     }
   };
 
-  const leave = () => {
+  // 나가기
+  const leave = async () => {
+    if (eventId == null) return;
     setLeaving(true);
     try {
-      wsRef.current?.send(JSON.stringify({ type: "leave", eventId }));
-    } catch {}
-    setTimeout(() => {
-      setLeaving(false);
+      await chatAPI.leaveChat(eventId);
+      try { wsRef.current?.close(); } catch {}
       router.replace("/chats");
-    }, 200);
+    } catch (e) {
+      console.error("[chatRoom] leave failed:", e);
+      router.replace(`/events/${eventId}`);
+    } finally {
+      setLeaving(false);
+    }
   };
+
+  if (eventId == null) {
+    return (
+      <div className="min-h-screen grid place-items-center text-destructive">
+        유효하지 않은 채팅방 ID입니다.
+      </div>
+    );
+  }
 
   if (guardMsg) {
     return (
@@ -169,14 +235,14 @@ export default function ChatRoomPage() {
             <Button variant="ghost" size="icon" onClick={() => router.back()}>
               <ArrowLeft className="w-4 h-4" />
             </Button>
-            <div className="font-semibold flex-1">채팅방 #{chatId}</div>
+            <div className="font-semibold flex-1">{titleFromQuery || `채팅방 #${eventIdParam}`}</div>
           </div>
         </div>
         <div className="container mx-auto px-4 py-6 max-w-3xl">
           <Card className="p-4">
             <div className="text-sm text-destructive">{guardMsg}</div>
             <div className="mt-3">
-              <Button onClick={() => router.push(`/events/${chatId}`)}>이벤트로 이동</Button>
+              <Button onClick={() => router.push(`/events/${eventIdParam}`)}>이벤트로 이동</Button>
             </div>
           </Card>
         </div>
@@ -192,7 +258,7 @@ export default function ChatRoomPage() {
           <Button variant="ghost" size="icon" onClick={() => router.back()}>
             <ArrowLeft className="w-4 h-4" />
           </Button>
-          <div className="font-semibold flex-1">채팅방 #{chatId}</div>
+          <div className="font-semibold flex-1">{titleFromQuery || `채팅방 #${eventIdParam}`}</div>
           <Button variant="outline" size="sm" onClick={leave} disabled={leaving}>
             {leaving ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <LogOut className="w-4 h-4 mr-2" />}
             나가기
@@ -227,7 +293,7 @@ export default function ChatRoomPage() {
           <div ref={bottomRef} />
         </Card>
 
-        {/* 입력창 */}
+        {/* 입력 */}
         <form
           className="mt-3 flex items-center gap-2"
           onSubmit={(e) => {
