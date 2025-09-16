@@ -76,17 +76,16 @@ export const authAPI = {
       body: JSON.stringify({ email, password }),
     });
 
-    // ✅ 소문자 token 우선
+    // 소문자 token 우선 + 하위 호환 키 저장
     const t =
       response?.token ??
       response?.accessToken ??
       response?.data?.token ??
-      response?.data?.accessToken ??
-      null;
+      response?.data?.accessToken ?? null;
 
     if (t) {
-      localStorage.setItem("token", t);      // 신규 키
-      localStorage.setItem("authToken", t);  // 하위 호환
+      localStorage.setItem("token", t);
+      localStorage.setItem("authToken", t);
     }
 
     if (response?.user) localStorage.setItem("user", JSON.stringify(response.user));
@@ -259,7 +258,9 @@ export const eventAPI_read = {
 };
 
 /* ─────────────────────────────────────────────────────────────
-   웹소켓 (서버 요구: /ws/chats?eventId=123, 인증은 Subprotocol 'token:<...>' 우선)
+   웹소켓 (기본: 같은 오리진 프록시로 쿠키 인증 / 옵션: 토큰 전달)
+   - .env(.production): NEXT_PUBLIC_WS_URL=/_be
+   - 결과(배포): wss://<프론트도메인>/_be/ws/chats?eventId=123
 ───────────────────────────────────────────────────────────── */
 export type ChatMessage = {
   id?: number | string;
@@ -271,42 +272,36 @@ export type ChatMessage = {
 export function openChatSocket(
   eventId: number,
   opts?: {
-    token?: string;
+    token?: string; // 있으면 쿼리+subprotocol로 함께 전송 (폴백/디버그용)
     onMessage?: (msg: any) => void;
     onOpen?: () => void;
     onClose?: (ev: CloseEvent) => void;
     onError?: (ev: Event) => void;
   }
 ) {
-  const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
+  // 기본값을 /_be 로 고정해 환경변수 누락 시에도 동일 경로 사용
+  const wsBaseRaw = (process.env.NEXT_PUBLIC_WS_URL || "/_be").trim();
+  const base =
+    typeof window !== "undefined" && wsBaseRaw.startsWith("/")
+      ? `${window.location.origin.replace(/^http/i, "ws")}${wsBaseRaw}`.replace(/\/+$/, "")
+      : wsBaseRaw.replace(/\/+$/, "");
 
-// http → ws, https → wss 변환 함수
-const fromHttpToWs = (u: string) =>
-  u.replace(/^http:\/\//i, "ws://").replace(/^https:\/\//i, "wss://");
+  // ✅ 기본은 쿠키 인증만 사용 (URL에 토큰 미포함)
+  //    단, opts.token 이 있으면 쿼리와 subprotocol로 추가 전송
+  const token = opts?.token
+    || (typeof window !== "undefined" && (localStorage.getItem("token") || "")) // 선택 폴백
+    || "";
 
-const wsBase = process.env.NEXT_PUBLIC_WS_URL || fromHttpToWs(apiBase);
-const base   = wsBase.replace(/\/+$/, "");
-
-  const token =
-    opts?.token ||
-    (typeof window !== "undefined"
-      ? localStorage.getItem("token") ||          // ✅ 소문자 token 1순위
-        localStorage.getItem("authToken") ||      // 하위 호환
-        localStorage.getItem("accessToken") ||    // 과거 키 호환
-        ""
-      : "");
-
-  // URL은 eventId만 필수. 폴백으로 token 쿼리 전달
   const url =
     `${base}/ws/chats?eventId=${encodeURIComponent(eventId)}` +
     (token ? `&token=${encodeURIComponent(token)}` : "");
 
-  // ✅ subprotocol 로 'token:<JWT>' 전달 (우선 경로)
   const protocols = token ? [`token:${token}`] : undefined;
+
   const ws = protocols ? new WebSocket(url, protocols) : new WebSocket(url);
 
   ws.addEventListener("open", () => {
-    // 서버가 system 메시지를 내려줄 수 있으므로 별도 join 전송 불필요
+    // 서버가 system 메시지를 내려주면 별도 join 불필요
     opts?.onOpen?.();
   });
   ws.addEventListener("message", (e) => {
@@ -332,7 +327,11 @@ export type ChatHistory = {
 };
 
 export const chatAPI = {
-  /** 채팅방 내용 불러오기 */
+  /** 채팅방 내용 불러오기
+   * - size 기본 30
+   * - 최초 조회: cursor 미전송
+   * - 다음 페이지: 서버가 준 nextCursor(≥1)만 cursor로 전송
+   */
   async getChatRoom(
     eventId: number,
     opts?: { cursor?: number | string; size?: number }
