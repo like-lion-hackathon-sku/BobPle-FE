@@ -279,8 +279,13 @@ export function openChatSocket(
   }
 ) {
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
-  const wsBase  = process.env.NEXT_PUBLIC_WS_URL || apiBase.replace(/^https/i, "ws");
-  const base    = wsBase.replace(/\/+$/, "");
+
+// http → ws, https → wss 변환 함수
+const fromHttpToWs = (u: string) =>
+  u.replace(/^http:\/\//i, "ws://").replace(/^https:\/\//i, "wss://");
+
+const wsBase = process.env.NEXT_PUBLIC_WS_URL || fromHttpToWs(apiBase);
+const base   = wsBase.replace(/\/+$/, "");
 
   const token =
     opts?.token ||
