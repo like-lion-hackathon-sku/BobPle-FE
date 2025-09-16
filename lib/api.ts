@@ -63,7 +63,7 @@ export function getCurrentUser(): any | null {
 }
 export function isAuthenticated(): boolean {
   if (typeof window === "undefined") return false;
-  return !!getAuthToken();
+  return !!(localStorage.getItem("token") || getAuthToken());
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -75,10 +75,20 @@ export const authAPI = {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
-    if (response?.success && (response?.token || response?.accessToken)) {
-      const t = response?.token ?? response?.accessToken;
-      localStorage.setItem("authToken", t);
+
+    // ✅ 소문자 token 우선
+    const t =
+      response?.token ??
+      response?.accessToken ??
+      response?.data?.token ??
+      response?.data?.accessToken ??
+      null;
+
+    if (t) {
+      localStorage.setItem("token", t);      // 신규 키
+      localStorage.setItem("authToken", t);  // 하위 호환
     }
+
     if (response?.user) localStorage.setItem("user", JSON.stringify(response.user));
     if (response?.success || response?.user) localStorage.setItem("isLoggedIn", "true");
     return response;
@@ -89,14 +99,18 @@ export const authAPI = {
       method: "POST",
       body: JSON.stringify({ idToken }),
     });
-    const token =
+    const t =
       response?.token ??
       response?.accessToken ??
       response?.access_token ??
       response?.jwt ??
       response?.data?.token ??
       response?.data?.accessToken ?? null;
-    if (token) localStorage.setItem("authToken", token);
+
+    if (t) {
+      localStorage.setItem("token", t);
+      localStorage.setItem("authToken", t);
+    }
 
     const user = response?.user ?? response?.success ?? null;
     if (user) localStorage.setItem("user", JSON.stringify(user));
@@ -108,6 +122,7 @@ export const authAPI = {
     try {
       await apiRequest("/api/auth/logout", { method: "POST" });
     } finally {
+      localStorage.removeItem("token");
       localStorage.removeItem("authToken");
       localStorage.removeItem("accessToken");
       localStorage.removeItem("user");
@@ -244,7 +259,7 @@ export const eventAPI_read = {
 };
 
 /* ─────────────────────────────────────────────────────────────
-   웹소켓 (서버 요구: /ws/chats?eventId=123&token=xxx)
+   웹소켓 (서버 요구: /ws/chats?eventId=123, 인증은 Subprotocol 'token:<...>' 우선)
 ───────────────────────────────────────────────────────────── */
 export type ChatMessage = {
   id?: number | string;
@@ -264,24 +279,29 @@ export function openChatSocket(
   }
 ) {
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
-  const wsBase  = process.env.NEXT_PUBLIC_WS_URL || apiBase.replace(/^http/i, "ws");
+  const wsBase  = process.env.NEXT_PUBLIC_WS_URL || apiBase.replace(/^https/i, "ws");
   const base    = wsBase.replace(/\/+$/, "");
 
   const token =
     opts?.token ||
     (typeof window !== "undefined"
-      ? localStorage.getItem("authToken") || localStorage.getItem("accessToken") || ""
+      ? localStorage.getItem("token") ||          // ✅ 소문자 token 1순위
+        localStorage.getItem("authToken") ||      // 하위 호환
+        localStorage.getItem("accessToken") ||    // 과거 키 호환
+        ""
       : "");
 
-  // ✅ 쿼리 방식으로 eventId & token 전달
+  // URL은 eventId만 필수. 폴백으로 token 쿼리 전달
   const url =
     `${base}/ws/chats?eventId=${encodeURIComponent(eventId)}` +
     (token ? `&token=${encodeURIComponent(token)}` : "");
 
-  const ws = new WebSocket(url);
+  // ✅ subprotocol 로 'token:<JWT>' 전달 (우선 경로)
+  const protocols = token ? [`token:${token}`] : undefined;
+  const ws = protocols ? new WebSocket(url, protocols) : new WebSocket(url);
 
   ws.addEventListener("open", () => {
-    // 서버가 system 메시지를 내려주므로 join 메시지는 필요 없음
+    // 서버가 system 메시지를 내려줄 수 있으므로 별도 join 전송 불필요
     opts?.onOpen?.();
   });
   ws.addEventListener("message", (e) => {
@@ -307,11 +327,7 @@ export type ChatHistory = {
 };
 
 export const chatAPI = {
-  /** 채팅방 내용 불러오기
-   * - size 기본 30
-   * - 최초 조회: cursor 미전송
-   * - 다음 페이지: 서버가 준 nextCursor(≥1)만 cursor로 전송
-   */
+  /** 채팅방 내용 불러오기 */
   async getChatRoom(
     eventId: number,
     opts?: { cursor?: number | string; size?: number }
@@ -335,14 +351,12 @@ export const chatAPI = {
       Array.isArray(body)        ? body       : [];
     const nextCursor = body?.nextCursor ?? body?.next_cursor ?? null;
 
-    const items: ChatMessage[] = rawItems.map((m: any) => ([
-      "id","userId","content","createdAt"
-    ].reduce((acc, _) => acc, {
+    const items: ChatMessage[] = rawItems.map((m: any) => ({
       id: m.id,
       userId: m.userId ?? m.user_id ?? m.user?.id ?? null,
       content: String(m.content ?? m.message ?? m.text ?? ""),
       createdAt: String(m.createdAt ?? m.created_at ?? new Date().toISOString()),
-    })));
+    }));
 
     return { items, nextCursor };
   },
