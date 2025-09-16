@@ -11,5 +11,10 @@
   to = "https://bobple-be.onrender.com/api/:splat"
   status = 200
   force = true
+[[redirects]]
+  from = "/ws/*"
+  to = "wss://bobple-be.onrender.com/ws/:splat"
+  status = 200
+  force = true
   # (선택) 백엔드가 Host체크하면 도움됨
   headers = { X-Forwarded-Host = ":host" }
