@@ -5,16 +5,18 @@
 [[plugins]]
   package = "@netlify/plugin-nextjs"
 
-
+# REST API 프록시
 [[redirects]]
-  from = "/api/*"
+  from = "/_be/api/*"
   to = "https://bobple-be.onrender.com/api/:splat"
   status = 200
   force = true
+  headers = { X-Forwarded-Host = ":host" }
+
+# WebSocket 프록시
 [[redirects]]
-  from = "/ws/*"
-  to = "wss://bobple-be.onrender.com/ws/:splat"
+  from = "/_be/ws/*"
+  to = "https://bobple-be.onrender.com/ws/:splat"
   status = 200
   force = true
-  # (선택) 백엔드가 Host체크하면 도움됨
   headers = { X-Forwarded-Host = ":host" }
