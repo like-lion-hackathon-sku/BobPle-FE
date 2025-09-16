@@ -14,11 +14,13 @@ import { eventAPI, chatAPI } from "@/lib/api";
 const DEBUG = process.env.NEXT_PUBLIC_DEBUG === "1";
 
 type ChatPreview = {
-  id: number | string;       // chatId (= eventId 가정)
+  id: number | string;       // chatId (= eventId)
   title: string;
   lastMessage?: string | null;
   lastAt?: string | null;    // ISO
   participants?: number | null;
+  startISO?: string | null;  // 추가
+  endISO?: string | null;    // 추가
 };
 
 const MOCK_CHAT: ChatPreview = {
@@ -27,6 +29,8 @@ const MOCK_CHAT: ChatPreview = {
   lastMessage: "연결되면 실제 데이터가 표시됩니다.",
   lastAt: new Date().toISOString(),
   participants: 2,
+  startISO: null,
+  endISO: null,
 };
 
 function asArray(v: any): any[] {
@@ -37,7 +41,6 @@ function asArray(v: any): any[] {
   if (Array.isArray(v?.success?.items)) return v.success.items;
   return [];
 }
-
 function formatTime(iso?: string | null) {
   if (!iso) return "";
   try {
@@ -51,6 +54,32 @@ function formatTime(iso?: string | null) {
     return "";
   }
 }
+function getEventId(app: any): number | null {
+  const v = app?.eventId ?? app?.id ?? app?.event_id ?? app?.event?.id ?? app?.event?.eventId ?? null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function getEventTitle(obj: any): string | null {
+  return (
+    obj?.title ??
+    obj?.eventTitle ??
+    obj?.subject ??
+    obj?.name ??
+    obj?.event_name ??
+    obj?.eventName ??
+    obj?.roomTitle ??
+    obj?.chatTitle ??
+    obj?.event?.title ??
+    obj?.event?.name ??
+    obj?.restaurant?.name ??
+    null
+  );
+}
+function getEventTimes(obj: any): { startISO?: string | null; endISO?: string | null } {
+  const startISO = obj?.startISO ?? obj?.startAt ?? obj?.start_at ?? obj?.event?.startAt ?? obj?.event?.start_at ?? null;
+  const endISO   = obj?.endISO   ?? obj?.endAt   ?? obj?.end_at   ?? obj?.event?.endAt   ?? obj?.event?.end_at   ?? null;
+  return { startISO: startISO ? String(startISO) : null, endISO: endISO ? String(endISO) : null };
+}
 
 export default function ChatsPage() {
   const router = useRouter();
@@ -60,20 +89,19 @@ export default function ChatsPage() {
   const [error, setError] = useState<string | null>(null);
   const [usedMock, setUsedMock] = useState(false);
 
+  // ▼ 추가: 현재/지난 탭
+  const [view, setView] = useState<"current" | "past">("current");
+
   useEffect(() => {
     let cancelled = false;
-
     (async () => {
       setLoading(true);
       setError(null);
       setUsedMock(false);
-
       try {
-        // 1) 내가 신청/참여한 밥약 목록 (응답형식 정규화!)
-        const appsRes = await eventAPI.getMyEvents().catch((e: any) => {
-          throw new Error("서버 연결에 실패했습니다. 잠시 후 다시 시도해주세요.");
-        });
+        const appsRes: any = await (eventAPI as any).getMyEvents();
         const myApps = asArray(appsRes);
+        if (DEBUG && myApps[0]) console.log("[chats] myApps sample keys:", Object.keys(myApps[0]));
 
         if (myApps.length === 0) {
           if (!cancelled) {
@@ -84,39 +112,60 @@ export default function ChatsPage() {
           return;
         }
 
-        // 2) 상위 20개에 대해 최근 메시지 1개 조회
         const top = myApps.slice(0, 20);
-
         const results = await Promise.allSettled(
           top.map(async (app: any) => {
-            const eventId = Number(app?.eventId ?? app?.id);     // ← 채팅방 = 이벤트ID
-            const title = app?.title ?? "제목 없음";
+            const eventId = getEventId(app);
+            if (!eventId) {
+              if (DEBUG) console.warn("[chats] eventId 없음:", app);
+              return null;
+            }
+
+            // 제목/시간 추출
+            let title = getEventTitle(app);
+            let { startISO, endISO } = getEventTimes(app);
+
+            // 상세로 보강
+            if ((!title || (!startISO && !endISO)) && typeof (eventAPI as any).getEvent === "function") {
+              try {
+                const detail = await (eventAPI as any).getEvent(eventId);
+                title = title || getEventTitle(detail) || detail?.title || detail?.name || null;
+                const t = getEventTimes(detail);
+                startISO = startISO || t.startISO || null;
+                endISO = endISO || t.endISO || null;
+              } catch (e) {
+                if (DEBUG) console.error("[chats] getEvent 실패:", eventId, e);
+              }
+            }
+
+            // 최근 메시지 1건
+            let lastMessage: string | null = null;
+            let lastAt: string | null = null;
+            try {
+              const hist = await chatAPI.getChatRoom(eventId, { size: 1 });
+              const last = asArray(hist?.items).slice(-1)[0] ?? null;
+              lastMessage = last?.content ?? null;
+              lastAt = (last?.createdAt as string) ?? null;
+            } catch (err) {
+              if (DEBUG) console.error("[chats] getChatRoom 실패:", eventId, err);
+            }
+
             const participants =
               app?.participantsCount ??
               app?.participants_count ??
               app?.current_participants ??
               app?.currentParticipants ??
+              (Array.isArray(app?.participants) ? app.participants.length : null) ??
               null;
-
-            // GET /api/chats/{chatId}
-            let msgs: any[] = [];
-            try {
-              const r = await chatAPI.getChatRoom(eventId);
-              msgs = asArray(r);
-            } catch (err) {
-              if (DEBUG) console.error("[chats] getChatRoom failed:", eventId, err);
-            }
-
-            const last = msgs.length ? msgs[msgs.length - 1] : null;
-            const lastMessage = last?.content ?? null;
-            const lastAt = last?.created_at ?? last?.createdAt ?? null;
 
             return {
               id: eventId,
-              title,
+              title: title || `밥약 #${eventId}`,
               lastMessage,
               lastAt,
               participants,
+              startISO: startISO ?? null,
+              endISO: endISO ?? null,
             } as ChatPreview;
           })
         );
@@ -131,7 +180,7 @@ export default function ChatsPage() {
             setItems([MOCK_CHAT]);
             setUsedMock(true);
           } else {
-            // 최근 메시지 시간 기준 정렬(없으면 뒤로)
+            // 기본 정렬: 최근 대화 우선
             previews.sort((a, b) => {
               const ta = a.lastAt ? Date.parse(a.lastAt) : 0;
               const tb = b.lastAt ? Date.parse(b.lastAt) : 0;
@@ -149,18 +198,26 @@ export default function ChatsPage() {
         if (!cancelled) setLoading(false);
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
   const filtered = useMemo(() => {
-    if (usedMock) return items;
-    if (!q.trim()) return items;
-    const s = q.toLowerCase();
-    return items.filter((i) => i.title.toLowerCase().includes(s));
-  }, [items, q, usedMock]);
+    // 검색
+    let arr = usedMock ? items : !q.trim() ? items : items.filter(i => i.title.toLowerCase().includes(q.toLowerCase()));
+
+    // 현재/지난 필터
+    if (!usedMock) {
+      const now = Date.now();
+      arr = arr.filter(i => {
+        const end = i.endISO ? Date.parse(i.endISO) : NaN;
+        const start = i.startISO ? Date.parse(i.startISO) : NaN;
+        const pivot = Number.isFinite(end) ? end : (Number.isFinite(start) ? start : 0);
+        const isPast = pivot !== 0 && pivot < now;
+        return view === "past" ? isPast : !isPast;
+      });
+    }
+    return arr;
+  }, [items, q, usedMock, view]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -178,15 +235,37 @@ export default function ChatsPage() {
           </div>
         )}
 
-        <div className="relative mb-4">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            className="pl-9"
-            placeholder="채팅방 검색"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            disabled={usedMock}
-          />
+        {/* 검색 + 탭 */}
+        <div className="flex items-center gap-3 mb-4">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              className="pl-9"
+              placeholder="채팅방 검색"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              disabled={usedMock}
+            />
+          </div>
+
+          {/* 현재/지난 토글 */}
+          <div className="flex shrink-0 rounded-md border">
+            <Button
+              variant={view === "current" ? "default" : "ghost"}
+              className="rounded-none"
+              onClick={() => setView("current")}
+            >
+              현재 밥약 보기
+            </Button>
+            <Separator orientation="vertical" />
+            <Button
+              variant={view === "past" ? "default" : "ghost"}
+              className="rounded-none"
+              onClick={() => setView("past")}
+            >
+              지난 밥약 보기
+            </Button>
+          </div>
         </div>
 
         <Separator className="mb-4" />
@@ -198,13 +277,13 @@ export default function ChatsPage() {
         ) : (
           <div className="space-y-3">
             {filtered.map((c) => {
-              const isMock = typeof c.id === "string" && c.id.startsWith("mock-");
+              const isMock = typeof c.id === "string" && (c.id as string).startsWith("mock-");
               return (
                 <Card
                   key={c.id}
                   className={`transition-shadow ${isMock ? "opacity-90" : "hover:shadow-sm cursor-pointer"}`}
                   onClick={() => {
-                    if (!isMock) router.push(`/chats/${c.id}`); // ← /chats/{eventId}
+                    if (!isMock) router.push(`/chats/${c.id}?t=${encodeURIComponent(c.title)}`);
                   }}
                 >
                   <CardContent className="py-3 px-4">
@@ -218,8 +297,14 @@ export default function ChatsPage() {
                           {c.lastMessage ?? "메시지가 없습니다."}
                         </div>
                       </div>
-                      <div className="text-xs text-muted-foreground shrink-0">
-                        {formatTime(c.lastAt)}
+                      <div className="text-right shrink-0">
+                        <div className="text-xs text-muted-foreground">{formatTime(c.lastAt)}</div>
+                        {/* 선택: 종료일 표시 */}
+                        {c.endISO && (
+                          <div className="text-[10px] text-muted-foreground/70 mt-1">
+                            종료: {new Date(c.endISO).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </CardContent>

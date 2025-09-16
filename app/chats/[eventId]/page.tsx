@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ArrowLeft, Send, Loader2, LogOut } from "lucide-react";
 
-import { apiRequest } from "@/lib/api";
+import { apiRequest, userAPI } from "@/lib/api";
 import { chatAPI, openChatSocket, type ChatMessage } from "@/lib/api";
 
 const POLL_MS = 3500;
@@ -20,7 +20,6 @@ const isAuthError = (err: any) => {
   return s === 401 || s === 403 || code === "U003" || msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("로그인");
 };
 
-// 낙관 추가/에코 중복 방지용
 const isDup = (a: ChatMessage, b: ChatMessage) => {
   const ta = new Date(a.createdAt || "").getTime();
   const tb = new Date(b.createdAt || "").getTime();
@@ -28,12 +27,29 @@ const isDup = (a: ChatMessage, b: ChatMessage) => {
   return String(a.userId) === String(b.userId) && a.content === b.content && secSame;
 };
 
+const ts = (m: ChatMessage) => {
+  const t = new Date(m.createdAt ?? "").getTime();
+  if (Number.isFinite(t)) return t;
+  const idNum = Number(m.id);
+  return Number.isFinite(idNum) ? idNum : 0;
+};
+const sortAsc = (list: ChatMessage[]) => [...list].sort((a, b) => ts(a) - ts(b));
+
+const fmtTime = (iso?: string) => {
+  try {
+    return new Date(iso || "").toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: true });
+  } catch {
+    return "";
+  }
+};
+
+type ChatItem = ChatMessage & { nickname?: string | null };
+
 export default function ChatRoomPage() {
   const router = useRouter();
-  // ✅ 폴더명이 [eventId]이므로 여기서도 eventId로 받아야 함
   const { eventId: eventIdParam } = useParams<{ eventId: string }>();
   const search = useSearchParams();
-  const titleFromQuery = search?.get("title") || "";
+  const titleFromQuery = search?.get("t") ?? "";
 
   const eventId = useMemo(() => {
     const n = Number(eventIdParam);
@@ -45,30 +61,63 @@ export default function ChatRoomPage() {
   const [wsReady, setWsReady] = useState(false);
   const [guardMsg, setGuardMsg] = useState<string | null>(null);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatItem[]>([]);
   const [text, setText] = useState("");
+
+  /** userId -> nickname 캐시 */
+  const [userMap, setUserMap] = useState<Record<string, string>>({});
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const meId = useMemo(() => {
-    if (typeof window === "undefined") return null;
+  const me = useMemo(() => {
+    if (typeof window === "undefined") return { id: null as number | null, nickname: "나" };
     try {
       const u = JSON.parse(localStorage.getItem("user") || "null");
-      return u?.id ?? null;
+      return { id: u?.id ?? null, nickname: u?.nickname ?? "나" } as { id: number | null; nickname: string };
     } catch {
-      return null;
+      return { id: null, nickname: "나" };
     }
   }, []);
+  const meId = me.id;
 
-  // 스크롤 항상 하단
+  /** 닉네임 채우기: /api/users/:id 의 { success: { nickname } } 사용 */
+  const ensureUsers = async (ids: Array<number | null | undefined>) => {
+    const wants = Array.from(
+      new Set(
+        ids
+          .filter((x): x is number => typeof x === "number" && Number.isFinite(x))
+          .filter((id) => String(id) !== String(meId))
+          .filter((id) => userMap[String(id)] == null)
+      )
+    );
+    if (wants.length === 0) return;
+    try {
+      const results = await Promise.allSettled(
+        wants.map(async (id) => {
+          const r = (await userAPI.getUserProfile(id)) as any;
+          // ✅ 다양한 래핑을 안전하게 처리
+          const body = r?.success ?? r?.data ?? r?.user ?? r;
+          const nn = body?.nickname ?? null;
+          return { id, nickname: nn as string | null };
+        })
+      );
+      const next: Record<string, string> = {};
+      for (const it of results) {
+        if (it.status === "fulfilled" && it.value?.id != null) {
+          next[String(it.value.id)] = it.value.nickname ?? `#${it.value.id}`;
+        }
+      }
+      if (Object.keys(next).length) setUserMap((prev) => ({ ...prev, ...next }));
+    } catch {}
+  };
+
   useEffect(() => {
     const id = setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 0);
     return () => clearTimeout(id);
   }, [messages]);
 
-  // 초기 히스토리(스펙: 최초엔 cursor 미전송, size만)
   useEffect(() => {
     if (eventId == null) return;
     let cancelled = false;
@@ -76,13 +125,32 @@ export default function ChatRoomPage() {
       setLoading(true);
       try {
         const { items } = await chatAPI.getChatRoom(eventId, { size: 30 });
-        if (!cancelled) setMessages(items);
+        if (!cancelled) {
+          const withNick: ChatItem[] = items.map((m: any) => ({
+            ...m,
+            nickname: m.nickname ?? m.user?.nickname ?? m.users?.nickname ?? null,
+          }));
+          const asc = sortAsc(withNick);
+          setMessages(asc);
+          ensureUsers(asc.map((m) => m.userId));
+        }
       } catch (e1) {
         try {
           const raw = await apiRequest(`/api/chats/${eventId}?size=30`);
           const d = (raw as any)?.data ?? raw;
           const list: any[] = Array.isArray(d?.items) ? d.items : Array.isArray(d) ? d : [];
-          if (!cancelled) setMessages(list as ChatMessage[]);
+          const items: ChatItem[] = list.map((m: any) => ({
+            id: m.id,
+            userId: m.userId ?? m.user_id ?? m.user?.id ?? null,
+            content: String(m.content ?? ""),
+            createdAt: String(m.createdAt ?? m.created_at ?? new Date().toISOString()),
+            nickname: m.nickname ?? m.user?.nickname ?? m.users?.nickname ?? null,
+          }));
+          if (!cancelled) {
+            const asc = sortAsc(items);
+            setMessages(asc);
+            ensureUsers(asc.map((m) => m.userId));
+          }
         } catch (err) {
           if (isAuthError(err)) setGuardMsg("이 채팅방은 참여 신청한 사용자만 입장할 수 있어요.");
         }
@@ -95,7 +163,6 @@ export default function ChatRoomPage() {
     };
   }, [eventId]);
 
-  // 폴링 (최신 페이지만 갱신: cursor 없이 size만)
   const stopPolling = () => {
     if (pollRef.current) {
       clearInterval(pollRef.current);
@@ -107,13 +174,19 @@ export default function ChatRoomPage() {
     if (eventId == null) return;
     pollRef.current = setInterval(async () => {
       try {
-        const { items: next } = await chatAPI.getChatRoom(eventId, { size: 30 });
+        const { items: next0 } = await chatAPI.getChatRoom(eventId, { size: 30 });
+        const next = next0.map((m: any) => ({
+          ...m,
+          nickname: m.nickname ?? m.user?.nickname ?? m.users?.nickname ?? null,
+        })) as ChatItem[];
+        const asc = sortAsc(next);
         setMessages((prev) => {
-          if (next.length !== prev.length) return next;
+          if (asc.length !== prev.length) return asc;
           const a = prev[prev.length - 1]?.content;
-          const b = next[next.length - 1]?.content;
-          return a === b ? prev : next;
+          const b = asc[asc.length - 1]?.content;
+          return a === b ? prev : asc;
         });
+        ensureUsers(asc.map((m) => m.userId));
       } catch (err) {
         if (isAuthError(err)) {
           setGuardMsg("이 채팅방은 참여 신청한 사용자만 입장할 수 있어요.");
@@ -123,7 +196,6 @@ export default function ChatRoomPage() {
     }, POLL_MS);
   };
 
-  // WS 연결 + 폴백
   useEffect(() => {
     if (eventId == null) return;
     const token =
@@ -133,33 +205,25 @@ export default function ChatRoomPage() {
 
     const ws = openChatSocket(eventId, {
       token,
-      onOpen: () => {
-        setWsReady(true);
-        stopPolling();
-      },
-      onClose: () => {
-        setWsReady(false);
-        startPolling();
-      },
-      onError: () => {
-        setWsReady(false);
-        try { ws.close(); } catch {}
-        startPolling();
-      },
+      onOpen: () => { setWsReady(true); stopPolling(); },
+      onClose: () => { setWsReady(false); startPolling(); },
+      onError: () => { setWsReady(false); try { ws.close(); } catch {} startPolling(); },
       onMessage: (data: any) => {
         if (!data) return;
-        if (data.type === "message") {
-          const m: ChatMessage = {
-            id: data.id,
-            userId: data.userId ?? data.user?.id ?? null,
-            content: data.content ?? data.message ?? data.text ?? "",
-            createdAt: data.createdAt ?? data.created_at ?? new Date().toISOString(),
+        if (data.type === "chat:new" && data.data) {
+          const m: ChatItem = {
+            id: data.data.id,
+            userId: data.data.userId ?? data.data.user?.id ?? null,
+            content: data.data.content ?? "",
+            createdAt: data.data.createdAt ?? data.data.created_at ?? new Date().toISOString(),
           };
           if (m.content) {
-            setMessages((prev) => (prev.some((x) => isDup(x, m)) ? prev : [...prev, m]));
+            setMessages((prev) => {
+              const next = prev.some((x) => isDup(x, m)) ? prev : sortAsc([...prev, m]);
+              return next;
+            });
+            ensureUsers([m.userId]);
           }
-        } else if (data.type === "join-ack" && data.ok === false) {
-          setGuardMsg("이 채팅방은 참여 신청한 사용자만 입장할 수 있어요.");
         }
       },
     });
@@ -177,18 +241,19 @@ export default function ChatRoomPage() {
     };
   }, [eventId]);
 
-  // 전송 (WS 우선, 실패 시 POST 폴백)
   const send = async () => {
     if (eventId == null) return;
     const content = text.trim();
     if (!content) return;
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "send", eventId, content }));
-      setMessages((prev) => [
-        ...prev,
-        { id: `tmp-${Date.now()}`, userId: meId ?? null, content, createdAt: new Date().toISOString() },
-      ]);
+      wsRef.current.send(JSON.stringify({ type: "chat:send", content }));
+      setMessages((prev) =>
+        sortAsc([
+          ...prev,
+          { id: `tmp-${Date.now()}`, userId: meId ?? null, content, createdAt: new Date().toISOString(), nickname: me.nickname },
+        ])
+      );
       setText("");
       return;
     }
@@ -197,13 +262,13 @@ export default function ChatRoomPage() {
       await chatAPI.sendMessage(eventId, { content });
       setText("");
       const { items } = await chatAPI.getChatRoom(eventId, { size: 30 });
-      setMessages(items);
+      const asc = sortAsc(items as ChatItem[]);
+      setMessages(asc);
     } catch (e) {
       console.warn("메시지 전송 실패:", e);
     }
   };
 
-  // 나가기
   const leave = async () => {
     if (eventId == null) return;
     setLeaving(true);
@@ -219,12 +284,15 @@ export default function ChatRoomPage() {
     }
   };
 
+  const getNickname = (m: ChatItem) => {
+    if (m.userId == null) return "익명";
+    if (String(m.userId) === String(meId)) return me.nickname || "나";
+    return m.nickname ?? userMap[String(m.userId)] ?? `#${m.userId}`;
+  };
+  const getInitial = (name: string) => (name?.trim()?.[0] ?? "?");
+
   if (eventId == null) {
-    return (
-      <div className="min-h-screen grid place-items-center text-destructive">
-        유효하지 않은 채팅방 ID입니다.
-      </div>
-    );
+    return <div className="min-h-screen grid place-items-center text-destructive">유효하지 않은 채팅방 ID입니다.</div>;
   }
 
   if (guardMsg) {
@@ -268,29 +336,55 @@ export default function ChatRoomPage() {
 
       {/* 본문 */}
       <div className="container mx-auto flex-1 px-4 py-4 w-full max-w-3xl">
-        <Card className="h-[68vh] overflow-y-auto p-4 space-y-2">
+        <Card className="h-[68vh] overflow-y-auto p-4">
           {loading ? (
             <div className="text-sm text-muted-foreground">불러오는 중…</div>
           ) : messages.length === 0 ? (
             <div className="text-sm text-muted-foreground">대화를 시작해보세요.</div>
           ) : (
-            messages.map((m, idx) => {
-              const mine = meId != null && String(m.userId ?? "") === String(meId);
-              return (
-                <div key={String(m.id ?? idx)} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                  <div
-                    className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm ${
-                      mine ? "bg-primary text-primary-foreground" : "bg-muted"
-                    }`}
-                    title={m.createdAt ? new Date(m.createdAt).toLocaleString("ko-KR") : ""}
-                  >
-                    {m.content}
+            <div className="flex flex-col gap-2">
+              {messages.map((m, idx) => {
+                const mine = meId != null && String(m.userId ?? "") === String(meId);
+                const name = getNickname(m);
+                const prev = messages[idx - 1];
+                const showHeader = !mine && (!prev || String(prev?.userId) !== String(m.userId));
+                return (
+                  <div key={String(m.id ?? idx)} className={`w-full flex ${mine ? "justify-end" : "justify-start"}`}>
+                    {!mine ? (
+                      <div className="flex items-end gap-2 max-w-[85%]">
+                        <div className="w-8 h-8 rounded-full bg-muted grid place-items-center text-xs text-foreground/80 select-none">
+                          {getInitial(name)}
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          {showHeader && <div className="text-[11px] text-foreground/60 leading-none">{name}</div>}
+                          <div className="flex items-end gap-1">
+                            <div
+                              className="inline-block rounded-2xl px-3 py-2 text-sm bg-muted"
+                              title={m.createdAt ? new Date(m.createdAt).toLocaleString("ko-KR") : ""}
+                            >
+                              {m.content}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground/70">{fmtTime(m.createdAt)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-end gap-1 max-w-[85%]">
+                        <div className="text-[10px] text-muted-foreground/70">{fmtTime(m.createdAt)}</div>
+                        <div
+                          className="inline-block rounded-2xl px-3 py-2 text-sm bg-yellow-300 text-black"
+                          title={m.createdAt ? new Date(m.createdAt).toLocaleString("ko-KR") : ""}
+                        >
+                          {m.content}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
-              );
-            })
+                );
+              })}
+              <div ref={bottomRef} />
+            </div>
           )}
-          <div ref={bottomRef} />
         </Card>
 
         {/* 입력 */}

@@ -23,7 +23,7 @@ type UiEvent = {
   id: number | string;
   title: string;
   date: string;            // startAt
-  end?: string | null;     // endAt (상태 계산 보강용)
+  end?: string | null;     // endAt
   participants: number;
   status: "upcoming" | "completed";
   isHost: boolean;
@@ -37,6 +37,7 @@ const FALLBACK_NAME = "이름 없음";
 const asArray = (d: any): any[] =>
   Array.isArray(d) ? d
   : Array.isArray(d?.items) ? d.items
+  : Array.isArray(d?.success?.items) ? d.success.items
   : Array.isArray(d?.data?.items) ? d.data.items
   : Array.isArray(d?.data) ? d.data
   : [];
@@ -85,71 +86,62 @@ export default function MyProfilePage() {
         setLoading(true);
         setErr(null);
 
-        // 내 정보는 localStorage에서만 읽음 (/users/me 미사용)
+        // 내 정보: 로컬 저장소(프로젝트 컨벤션 유지)
         let myId: number | null = null;
         let myName: string | null = null;
         let myAvatar: string | null = null;
         try {
-          const ls = JSON.parse(localStorage.getItem("user") || "null");
+          const raw = localStorage.getItem("user");
+          const ls = raw ? JSON.parse(raw) : null;
           myId = toNum(ls?.id);
           myName = ls?.nickname ?? ls?.name ?? null;
           myAvatar = ls?.avatar ?? null;
         } catch {}
         if (!Number.isFinite(myId as number)) throw new Error("로그인 정보가 없습니다.");
 
-        // 내가 주최/참여한 밥약
-        const ev: UiEvent[] = [];
-        for (let page = 1; page <= 60; page++) {
-          const r: any = await apiRequest(
-            `/api/events?userId=${myId}&page=${page}&size=50`
-          ).catch(() => null);
+        /* ──────────────── ① 내가 신청/주최한 밥약: /events/me ────────────────
+           응답 예시(스크린샷):
+           success.items[].{
+             id, eventId, creatorId, createdAt,
+             events: { id, creatorId, title, content, restaurantId, startAt, endAt, ... },
+             users: { id, nickname }
+           }
+        */
+        const res = await apiRequest(`/api/events/me?page=1&size=50`);
+        const rows = asArray(res);
+
+        const ev: UiEvent[] = rows.map((row: any) => {
+          const evObj = row?.events ?? {};
+          const start = evObj.startAt ?? evObj.start_at ?? null;
+          const end = evObj.endAt ?? evObj.end_at ?? null;
+
+          // 참여자 수는 백엔드 필드가 없을 수 있어 임시 보강:
+          const participants =
+            toNum(evObj.participantsCount) ??
+            toNum(evObj.currentParticipants) ??
+            toNum(row?.participantsCount) ??
+            1; // 최소 1명
+
+          const creatorId =
+            toNum(evObj.creatorId) ?? toNum(evObj.creator_id) ?? null;
+
+          return {
+            id: evObj.id ?? row?.eventId ?? row?.id ?? Math.random().toString(36).slice(2),
+            title: evObj.title ?? "제목 없음",
+            date: typeof start === "string" ? start : new Date().toISOString(),
+            end,
+            participants: participants ?? 1,
+            status: computeStatus(start, end),
+            isHost: Number(creatorId) === Number(myId),
+          } as UiEvent;
+        });
+
+        /* ──────────────── ② 내가 받은 리뷰 (기존 로직 유지) ──────────────── */
+        const rv: Review[] = [];
+        for (let page = 1; page <= 10; page++) {
+          let r: any = await apiRequest(`/api/reviews/${myId}?page=${page}&size=50`).catch(() => null);
           const items = asArray(r);
           if (!items.length) break;
-
-          for (const it of items) {
-            const start = it.startISO ?? it.start_at ?? it.startAt ?? null;
-            const end   = it.endISO   ?? it.end_at   ?? it.endAt   ?? null;
-            const participants =
-              toNum(it.participantsCount) ??
-              toNum(it.participants_count) ??
-              toNum(it.currentParticipants) ??
-              0;
-            const creatorId =
-              toNum(it.creatorId) ?? toNum(it.creator_id) ?? toNum(it.creator?.id) ?? null;
-
-            ev.push({
-              id: it.id ?? it.eventId ?? Math.random().toString(36).slice(2),
-              title: it.title ?? "제목 없음",
-              date: typeof start === "string" ? start : new Date().toISOString(),
-              end,
-              participants: participants ?? 0,
-              status: computeStatus(start, end),
-              isHost: Number(creatorId) === Number(myId),
-            });
-          }
-
-          const pg = r?.data?.pagination ?? r?.pagination ?? {};
-          const hasNext =
-            typeof pg?.hasNext === "boolean"
-              ? pg.hasNext
-              : (pg?.page ?? 1) < (pg?.totalPages ?? 1);
-          if (!hasNext) break;
-        }
-
-        // 내가 받은 리뷰
-        const rv: Review[] = [];
-        for (let page = 1; page <= 200; page++) {
-          let res: any = await apiRequest(
-            `/api/reviews/${myId}?page=${page}&take=50`
-          ).catch(() => null);
-          if (!res || (!Array.isArray(res?.items) && !Array.isArray(res?.data?.items))) {
-            res = await apiRequest(
-              `/api/reviews/${myId}?page=${page}&size=50`
-            ).catch(() => null);
-          }
-          const items = asArray(res);
-          if (!items.length) break;
-
           for (const it of items) {
             rv.push({
               id: it.id ?? `${page}-${rv.length}`,
@@ -158,8 +150,7 @@ export default function MyProfilePage() {
               comment: it.comment ?? it.content ?? null,
             });
           }
-
-          const take = Number(res?.pagination?.take ?? res?.pagination?.size ?? 50);
+          const take = Number(r?.pagination?.size ?? 50);
           if (items.length < take) break;
         }
 
@@ -300,7 +291,7 @@ export default function MyProfilePage() {
                           {ev.status === "completed" ? "완료" : "예정"}
                         </Badge>
 
-                        {/* ✅ 내 프로필: 완료된 밥약이면 "리뷰 작성" 버튼 노출 */}
+                        {/* 완료된 밥약이면 "리뷰 작성" 버튼 */}
                         {ev.status === "completed" && (
                           <Button
                             size="sm"
