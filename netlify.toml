@@ -5,15 +5,15 @@
 [[plugins]]
   package = "@netlify/plugin-nextjs"
 
-# REST API 프록시
+# API 프록시는 그대로 유지
 [[redirects]]
-  from = "/_be/api/*"
+  from = "/api/*"
   to = "https://bobple-be.onrender.com/api/:splat"
   status = 200
   force = true
   headers = { X-Forwarded-Host = ":host" }
 
-# WebSocket 프록시
+# ✅ WebSocket 프록시만 추가
 [[redirects]]
   from = "/_be/ws/*"
   to = "https://bobple-be.onrender.com/ws/:splat"
