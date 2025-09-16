@@ -5,18 +5,18 @@
 [[plugins]]
   package = "@netlify/plugin-nextjs"
 
-# API 프록시는 그대로 유지
+# WS (로컬과 동일 프리픽스)
 [[redirects]]
-  from = "/api/*"
-  to = "https://bobple-be.onrender.com/api/:splat"
-  status = 200
-  force = true
-  headers = { X-Forwarded-Host = ":host" }
+from = "/_be/ws/*"
+to   = "https://bobple-be.onrender.com/ws/:splat"
+status = 200
+force = true
+headers = { X-Forwarded-Host=":host", X-Forwarded-Proto="https" }
 
-# ✅ WebSocket 프록시만 추가
+# API
 [[redirects]]
-  from = "/ws/*"
-  to = "https://bobple-be.onrender.com/ws/:splat"
-  status = 200
-  force = true
-  headers = { X-Forwarded-Host = ":host" }
+from = "/_be/api/*"
+to   = "https://bobple-be.onrender.com/api/:splat"
+status = 200
+force = true
+headers = { X-Forwarded-Host=":host", X-Forwarded-Proto="https" }
