@@ -296,7 +296,7 @@ export function openChatSocket(
     `${base}/ws/chats?eventId=${encodeURIComponent(eventId)}` +
     (token ? `&token=${encodeURIComponent(token)}` : "");
 
-  const protocols = token ? [`token:${token}`] : undefined;
+  const protocols = token ? [`bearer.${token}`] : undefined;
 
   const ws = protocols ? new WebSocket(url, protocols) : new WebSocket(url);
 
