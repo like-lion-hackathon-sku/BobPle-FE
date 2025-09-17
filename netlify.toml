@@ -11,12 +11,10 @@
   to = "https://bobple-be.onrender.com/api/:splat"
   status = 200
   force = true
-  headers = { X-Forwarded-Host = ":host" }
 
 # ✅ WebSocket 프록시 (배포는 HTTPS → WSS)
 [[redirects]]
   from = "/_be/ws/*"
-  to = "wss://bobple-be.onrender.com/ws/:splat"  # ← wss로 명시 권장
+  to = "https://bobple-be.onrender.com/ws/:splat"  # ← wss로 명시 권장
   status = 200
   force = true
-  headers = { X-Forwarded-Host = ":host" }
