@@ -66,6 +66,16 @@ export function isAuthenticated(): boolean {
   return !!(localStorage.getItem("token") || getAuthToken());
 }
 
+/** 응답에서 { user, accessToken } 안전하게 추출 */
+function unwrapSuccess(r: any) {
+  const s = r?.success ?? r;
+  const d = r?.data ?? {};
+  return {
+    token: s?.accessToken ?? s?.token ?? d?.accessToken ?? d?.token ?? null,
+    user: s?.user ?? r?.user ?? d?.user ?? null,
+  };
+}
+
 /* ─────────────────────────────────────────────────────────────
    인증
 ───────────────────────────────────────────────────────────── */
@@ -76,20 +86,13 @@ export const authAPI = {
       body: JSON.stringify({ email, password }),
     });
 
-    // 소문자 token 우선 + 하위 호환 키 저장
-    const t =
-      response?.token ??
-      response?.accessToken ??
-      response?.data?.token ??
-      response?.data?.accessToken ?? null;
-
-    if (t) {
-      localStorage.setItem("token", t);
-      localStorage.setItem("authToken", t);
+    const { token, user } = unwrapSuccess(response);
+    if (token) {
+      localStorage.setItem("token", token);
+      localStorage.setItem("authToken", token);
     }
-
-    if (response?.user) localStorage.setItem("user", JSON.stringify(response.user));
-    if (response?.success || response?.user) localStorage.setItem("isLoggedIn", "true");
+    if (user) localStorage.setItem("user", JSON.stringify(user));
+    if (token || user) localStorage.setItem("isLoggedIn", "true");
     return response;
   },
 
@@ -98,20 +101,12 @@ export const authAPI = {
       method: "POST",
       body: JSON.stringify({ idToken }),
     });
-    const t =
-      response?.token ??
-      response?.accessToken ??
-      response?.access_token ??
-      response?.jwt ??
-      response?.data?.token ??
-      response?.data?.accessToken ?? null;
 
-    if (t) {
-      localStorage.setItem("token", t);
-      localStorage.setItem("authToken", t);
+    const { token, user } = unwrapSuccess(response);
+    if (token) {
+      localStorage.setItem("token", token);
+      localStorage.setItem("authToken", token);
     }
-
-    const user = response?.user ?? response?.success ?? null;
     if (user) localStorage.setItem("user", JSON.stringify(user));
     localStorage.setItem("isLoggedIn", "true");
     return response;
@@ -132,12 +127,16 @@ export const authAPI = {
   getProfile: async () => {
     try {
       const refreshed = await refreshPOST();
-      const me = refreshed?.user ?? refreshed ?? null;
-      if (me?.id) {
-        localStorage.setItem("user", JSON.stringify(me));
+      const { token, user } = unwrapSuccess(refreshed);
+      if (token) {
+        localStorage.setItem("token", token);
+        localStorage.setItem("authToken", token);
+      }
+      if (user?.id) {
+        localStorage.setItem("user", JSON.stringify(user));
         localStorage.setItem("isLoggedIn", "true");
       }
-      return me;
+      return user ?? null;
     } catch {
       return null;
     }
@@ -279,31 +278,26 @@ export function openChatSocket(
     onError?: (ev: Event) => void;
   }
 ) {
-  // 기본값을 /_be 로 고정해 환경변수 누락 시에도 동일 경로 사용
   const wsBaseRaw = (process.env.NEXT_PUBLIC_WS_URL || "/_be").trim();
   const base =
     typeof window !== "undefined" && wsBaseRaw.startsWith("/")
       ? `${window.location.origin.replace(/^http/i, "ws")}${wsBaseRaw}`.replace(/\/+$/, "")
       : wsBaseRaw.replace(/\/+$/, "");
 
-  // ✅ 기본은 쿠키 인증만 사용 (URL에 토큰 미포함)
-  //    단, opts.token 이 있으면 쿼리와 subprotocol로 추가 전송
-  const token = opts?.token
-    || (typeof window !== "undefined" && (localStorage.getItem("token") || "")) // 선택 폴백
-    || "";
+  const token =
+    opts?.token ||
+    (typeof window !== "undefined" && (localStorage.getItem("token") || "")) ||
+    "";
 
   const url =
     `${base}/ws/chats?eventId=${encodeURIComponent(eventId)}` +
     (token ? `&token=${encodeURIComponent(token)}` : "");
 
-  const protocols = token ? [`bearer.${token}`] : undefined;
+  const protocols = token ? [`bearer.${token}`] : undefined; // ← 서버가 bearer.<JWT> 기대
 
   const ws = protocols ? new WebSocket(url, protocols) : new WebSocket(url);
 
-  ws.addEventListener("open", () => {
-    // 서버가 system 메시지를 내려주면 별도 join 불필요
-    opts?.onOpen?.();
-  });
+  ws.addEventListener("open", () => opts?.onOpen?.());
   ws.addEventListener("message", (e) => {
     let data: any = e.data;
     try { data = JSON.parse(e.data); } catch {}
@@ -327,11 +321,6 @@ export type ChatHistory = {
 };
 
 export const chatAPI = {
-  /** 채팅방 내용 불러오기
-   * - size 기본 30
-   * - 최초 조회: cursor 미전송
-   * - 다음 페이지: 서버가 준 nextCursor(≥1)만 cursor로 전송
-   */
   async getChatRoom(
     eventId: number,
     opts?: { cursor?: number | string; size?: number }
@@ -365,7 +354,6 @@ export const chatAPI = {
     return { items, nextCursor };
   },
 
-  /** 메시지 전송(WS 실패 시 폴백) */
   async sendMessage(eventId: number, payload: { content: string }) {
     try {
       return await apiRequest(`/api/chats/${encodeURIComponent(eventId)}`, {
@@ -390,7 +378,6 @@ export const chatAPI = {
     }
   },
 
-  /** 채팅방 나가기 */
   async leaveChat(eventId: number) {
     return apiRequest(`/api/chats/${encodeURIComponent(eventId)}`, { method: "PATCH" });
   },
